@@ -53,6 +53,17 @@ func TestMatchDAGNormalizesHyphenAndUnderscoreTags(t *testing.T) {
 	}
 	got, ok = MatchDAG("dbt_metricscore_30m", nil, "", products, nil)
 	if !ok || got.ID != "metricscore" {
-		t.Fatalf("dag_id contains: %+v ok=%v", got, ok)
+		t.Fatalf("dag_id token: %+v ok=%v", got, ok)
+	}
+}
+
+func TestMatchDAGDoesNotAttachBareDaily(t *testing.T) {
+	products := []domain.DataProduct{{ID: "inorbit", Name: "inorbit"}}
+	if _, ok := MatchDAG("daily", nil, "", products, nil); ok {
+		t.Fatal("bare daily should not match inorbit")
+	}
+	got, ok := MatchDAG("dbt_inorbit_daily", nil, "", products, nil)
+	if !ok || got.ID != "inorbit" {
+		t.Fatalf("dbt_inorbit_daily: %+v ok=%v", got, ok)
 	}
 }
