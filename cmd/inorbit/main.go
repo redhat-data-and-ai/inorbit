@@ -20,6 +20,7 @@ import (
 	"github.com/inorbit/inorbit/internal/ingest/astro"
 	"github.com/inorbit/inorbit/internal/ingest/quality"
 	"github.com/inorbit/inorbit/internal/store"
+	"github.com/inorbit/inorbit/internal/web"
 )
 
 type intervals struct {
@@ -88,7 +89,7 @@ func main() {
 	}
 
 	srv := &api.Server{Store: st, Alerts: alerts}
-	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}
+	httpSrv := &http.Server{Addr: *addr, Handler: web.Mount(srv.Handler())}
 
 	iv := intervals{
 		clock:   time.Duration(*clockSec) * time.Second,

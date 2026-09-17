@@ -1,12 +1,17 @@
-.PHONY: test run run-live build
+.PHONY: test run run-live build ui.prepare
 
-test:
+ui.prepare:
+	rm -rf internal/web/embed/dist
+	mkdir -p internal/web/embed/dist
+	cp web/index.html web/app.js web/styles.css internal/web/embed/dist/
+
+test: ui.prepare
 	go test ./...
 
-run:
+run: ui.prepare
 	go run ./cmd/inorbit -mode=demo -config=configs/demo.json -addr=:8080
 
-run-live:
+run-live: ui.prepare
 	@set -a; \
 	if [ -f .env ]; then . ./.env; fi; \
 	if [ -f .env.local ]; then . ./.env.local; fi; \
@@ -18,6 +23,6 @@ run-live:
 	if [ ! -f $$cfg ]; then cfg=configs/live.example.json; fi; \
 	go run ./cmd/inorbit -mode=live -config=$$cfg -addr=:8080
 
-build:
+build: ui.prepare
 	mkdir -p bin
 	go build -o bin/inorbit ./cmd/inorbit
