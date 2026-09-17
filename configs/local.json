@@ -1,0 +1,18 @@
+{
+  "http_addr": ":8080",
+  "mode": "demo",
+  "clock_interval_seconds": 15,
+  "astro_run_poll_seconds": 90,
+  "astro_tag_poll_seconds": 600,
+  "quality_poll_seconds": 120,
+  "snowflake": {
+    "account": "example",
+    "database": "catalog_db",
+    "warehouse": "xs_wh",
+    "note": "Shared account/role/warehouse go in configs/live.json (gitignored). Quality tables are per data product."
+  },
+  "history_databases": {
+    "metrics_history": "pipeline history only",
+    "catalog": "registry, lineage, daily snapshots — not live tiles"
+  }
+}
