@@ -1,0 +1,135 @@
+{
+  "data_products": [
+    {
+      "id": "alpha",
+      "name": "alpha",
+      "type": "aggregate",
+      "owner_team": "platform",
+      "slack_channel": "#dp-alpha",
+      "quality": {
+        "validx": {
+          "enabled": true,
+          "database": "ALPHA_DB"
+        },
+        "dbt": {
+          "enabled": false,
+          "database": "ALPHA_DB"
+        }
+      }
+    },
+    {
+      "id": "beta",
+      "name": "beta",
+      "type": "source-aligned",
+      "owner_team": "platform",
+      "slack_channel": "#dp-beta",
+      "quality": {
+        "validx": {
+          "enabled": true,
+          "database": "BETA_DB"
+        },
+        "dbt": {
+          "enabled": true,
+          "database": "BETA_DB"
+        }
+      }
+    }
+  ],
+  "demo": {
+    "dags": [
+      {
+        "data_product_id": "alpha",
+        "dag_id": "alpha_hourly",
+        "astro_deployment_name": "prod",
+        "astro_deployment_id": "prod",
+        "dag_status": "SUCCESS",
+        "external_run_id": "manual__demo_alpha",
+        "completed_ago": "95m",
+        "dag_duration_seconds": 480,
+        "is_primary_dag": true,
+        "is_silent_failure_monitored": true,
+        "dag_expected_interval_mins": 60,
+        "dag_sla_minutes": 30,
+        "trigger_type": "scheduled",
+        "pipeline_type": "DAG",
+        "astro_url": "https://astro.example.com/prod/dags/alpha_hourly",
+        "dag_runs_7d": 24,
+        "dag_reliability_7d": 100,
+        "dag_runs_30d": 96,
+        "dag_reliability_30d": 93.75,
+        "dag_runs_90d": 280,
+        "dag_reliability_90d": 90
+      },
+      {
+        "data_product_id": "beta",
+        "dag_id": "beta_daily",
+        "astro_deployment_name": "prod",
+        "astro_deployment_id": "prod",
+        "dag_status": "SUCCESS",
+        "external_run_id": "scheduled__demo_beta",
+        "completed_ago": "2h",
+        "dag_duration_seconds": 2865,
+        "is_primary_dag": true,
+        "is_silent_failure_monitored": true,
+        "dag_expected_interval_mins": 1440,
+        "dag_sla_minutes": 480,
+        "trigger_type": "scheduled",
+        "pipeline_type": "DAG",
+        "astro_url": "https://astro.example.com/prod/dags/beta_daily",
+        "dag_runs_7d": 7,
+        "dag_reliability_7d": 100,
+        "dag_runs_30d": 37,
+        "dag_reliability_30d": 81.08,
+        "dag_runs_90d": 78,
+        "dag_reliability_90d": 84.62
+      }
+    ],
+    "checks": [
+      {
+        "check_id": "alpha-accuracy",
+        "data_product_id": "alpha",
+        "check_name": "end-to-end reconciliation",
+        "dimension": "ACCURACY",
+        "severity": "CRITICAL",
+        "status": "FAILED",
+        "source_type": "VALIDX",
+        "source_table": "ALPHA_DB.DATATRUST_MARTS.VALIDATION_RESULT",
+        "is_cde": true,
+        "element": "amount",
+        "executed_ago": "20m",
+        "first_failed_ago": "3h"
+      },
+      {
+        "check_id": "alpha-completeness",
+        "data_product_id": "alpha",
+        "check_name": "row_count_not_zero",
+        "dimension": "COMPLETENESS",
+        "severity": "MEDIUM",
+        "status": "PASSED",
+        "source_type": "VALIDX",
+        "executed_ago": "20m"
+      },
+      {
+        "check_id": "beta-uniqueness",
+        "data_product_id": "beta",
+        "check_name": "unique_record_id",
+        "dimension": "UNIQUENESS",
+        "severity": "LOW",
+        "status": "PASSED",
+        "source_type": "DBT_TEST",
+        "source_table": "BETA_DB.DBTLOGS.ELEMENTARY_TEST_RESULTS",
+        "executed_ago": "40m"
+      },
+      {
+        "check_id": "beta-consistency",
+        "data_product_id": "beta",
+        "check_name": "source target reconciliation",
+        "dimension": "CONSISTENCY",
+        "severity": "HIGH",
+        "status": "PASSED",
+        "source_type": "VALIDX",
+        "executed_ago": "40m"
+      }
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "astro": {
+    "token_env": "ASTRO_TOKEN",
+    "org_url": "${ASTRO_ORG_URL}",
+    "deployments": [
+      {
+        "name": "prod",
+        "id": "${INORBIT_ASTRO_DEPLOYMENT_ID}",
+        "airflow_api_url": "${INORBIT_AIRFLOW_API_URL}"
+      },
+      {
+        "name": "stage",
+        "id": "${INORBIT_ASTRO_STAGE_DEPLOYMENT_ID}"
+      }
+    ]
+  },
+  "snowflake": {
+    "account": "${SNOWFLAKE_ACCOUNT}",
+    "user_env": "SNOWFLAKE_USER",
+    "role": "${SNOWFLAKE_ROLE}",
+    "warehouse": "${SNOWFLAKE_WAREHOUSE}",
+    "authenticator": "externalbrowser"
+  },
+  "data_products": [
+    {
+      "id": "alpha",
+      "name": "alpha",
+      "type": "aggregate",
+      "owner_team": "platform",
+      "quality": {
+        "validx": {
+          "enabled": true,
+          "database": "ALPHA_DB",
+          "schema": "DATATRUST_MARTS",
+          "table": "VALIDATION_RESULT"
+        },
+        "dbt": {
+          "enabled": false,
+          "database": "ALPHA_DB",
+          "schema": "DBTLOGS",
+          "table": "ELEMENTARY_TEST_RESULTS"
+        }
+      }
+    },
+    {
+      "id": "beta",
+      "name": "beta",
+      "type": "aggregate",
+      "owner_team": "platform",
+      "dag_ids": ["beta_daily"],
+      "quality": {
+        "validx": {
+          "enabled": true,
+          "database": "BETA_DB",
+          "schema": "DATATRUST_MARTS",
+          "table": "VALIDATION_RESULT"
+        },
+        "dbt": {
+          "enabled": true,
+          "database": "BETA_DB",
+          "schema": "DBTLOGS",
+          "table": "ELEMENTARY_TEST_RESULTS"
+        }
+      }
+    }
+  ]
+}
