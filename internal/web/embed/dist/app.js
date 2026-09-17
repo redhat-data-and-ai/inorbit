@@ -825,11 +825,11 @@ function renderDetail(route) {
     const emptyTitle = src === "DBT_TEST"
       ? "No Elementary rows in the latest dbt invocation for this product."
       : src === "VALIDX"
-        ? "No ValidX rows in the latest warehouse run for this product."
-        : "No ValidX or Elementary checks in the latest warehouse run.";
+        ? "No validation rows in the latest warehouse run for this product."
+        : "No validation or Elementary checks in the latest warehouse run.";
     const emptyHint = all.length
       ? "Clear the source or status chips, or the search box."
-      : "ValidX is skipped when DATATRUST_MARTS is missing. Elementary still loads from DBTLOGS when that table exists.";
+      : "Validation ingest is skipped when that table is missing. Elementary still loads from DBTLOGS when that table exists.";
     body = `
       <div class="chart-grid hero">
         ${segmentDonut([
@@ -837,13 +837,13 @@ function renderDetail(route) {
           { value: warn, label: "Warning", cls: "warn" },
           { value: failed, label: "Failed", cls: "bad" },
         ], `${passed}/${scoped.length || 0}`, "Latest run")}
-        ${donut(all.length ? vx / Math.max(all.length, 1) : 0, String(vx), "ValidX", "info")}
+        ${donut(all.length ? vx / Math.max(all.length, 1) : 0, String(vx), "Validation", "info")}
         ${donut(all.length ? dbt / Math.max(all.length, 1) : 0, String(dbt), "Elementary", "info")}
       </div>
       ${tableToolbar(rows.length, scoped.length, "Filter checks",
         chipGroup([
           ["all", "All", all.length],
-          ["VALIDX", "ValidX", vx],
+          ["VALIDX", "Validation", vx],
           ["DBT_TEST", "Elementary", dbt],
         ], src, "source") +
         chipGroup([
@@ -878,7 +878,7 @@ function renderDetail(route) {
           </tbody>
         </table>
       </div>
-      <p class="sub">${vx} ValidX${latestVx ? " " + fmtRelative(latestVx) : ""} · ${dbt} Elementary${latestDbt ? " " + fmtRelative(latestDbt) : ""}. Latest warehouse invocation only.</p>`;
+      <p class="sub">${vx} validation${latestVx ? " " + fmtRelative(latestVx) : ""} · ${dbt} Elementary${latestDbt ? " " + fmtRelative(latestDbt) : ""}. Latest warehouse invocation only.</p>`;
   } else {
     const h = snap.health || {};
     const f = snap.freshness || {};
@@ -887,7 +887,7 @@ function renderDetail(route) {
       ${tilesHTML(snap, base)}
       ${overviewCharts(snap)}
       <p class="msg ${cls}">${esc(h.status_message || f.status_reason || "No status message")}</p>
-      <p class="sub">Health Score v2 from live ValidX/Elementary + Astro freshness. Open the Freshness or Pipeline tab and click a DAG name to compare with Astro.</p>`;
+      <p class="sub">Health Score v2 from live validation/Elementary + Astro freshness. Open the Freshness or Pipeline tab and click a DAG name to compare with Astro.</p>`;
   }
   const updatedRel = parseDate(snap.updated_at) ? fmtRelative(snap.updated_at) : "—";
   return `

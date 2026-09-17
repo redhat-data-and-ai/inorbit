@@ -114,7 +114,7 @@ func Apply(c domain.Check, asOf time.Time, cfg Config) domain.Check {
 func displayName(src domain.SourceType) string {
 	switch src {
 	case domain.SrcValidX:
-		return "ValidX"
+		return "Validation"
 	case domain.SrcDBTTest:
 		return "dbt / Elementary"
 	case domain.SrcAstroFreshness, domain.SrcAstroPipeline:

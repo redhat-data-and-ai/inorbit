@@ -7,8 +7,7 @@ import (
 
 const unknownDeploymentID = ":deployment_id"
 
-// GridURL is the Astro DAG overview stored as astro_url — same grain as
-// inorbit-dbt marts.pipeline_status / macros/astro_grid_url.sql:
+// GridURL is the Astro DAG overview stored as astro_url:
 // {org}/{deployment_id}/dags/{dag_id}.
 // Links the DAG page, not /runs/{run_id} (that route 403s under Astro DAG RBAC).
 // Unknown deployment id uses the :deployment_id placeholder.
@@ -58,7 +57,7 @@ func AirflowAPIBases(dep Deployment) []string {
 		seen[s] = struct{}{}
 		out = append(out, s)
 	}
-	// count_astro_dags.py uses base = {org}/{deployment_id} then GET /api/v2/dags.
+	// Astronomer hosts Airflow at {org}/{deployment_id}, then GET /api/v2/dags.
 	// Prefer versioned paths; keep a bare root last so httptest URLs still work.
 	if versionedAPIPath(raw) && pathHasDeploymentID(raw, dep.ID) {
 		add(raw)

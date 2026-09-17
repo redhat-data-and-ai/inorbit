@@ -23,7 +23,7 @@ func estimateScale(in scaleInput) domain.ScaleEstimate {
 		HealthHistoryPoints: in.histPoints,
 		SnapshotJSONBytes:   in.snapshotJSON,
 		AirflowPoll:         "O(deployments × listed DAGs) to enumerate, then O(matched DAGs) latest-run fetches (8 workers). Extra products on the same deployments do not re-list Airflow; run fetches grow with matched DAGs.",
-		QualityPoll:         "O(data products) sequential queries on one Snowflake session. Missing ValidX/Elementary tables are skipped. At 200 products budget 1–5 minutes unless you raise the quality interval.",
+		QualityPoll:         "O(data products) sequential queries on one Snowflake session. Missing validation/Elementary tables are skipped. At 200 products budget 1–5 minutes unless you raise the quality interval.",
 		ClockTick:           "O(data products × DAGs) in process, no I/O. 15s ticks stay cheap at 200 products.",
 	}
 	if in.products > 0 {

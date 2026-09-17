@@ -22,8 +22,8 @@ func Apply(st *store.Memory, eng *engine.Engine, dags []domain.DAG, now time.Tim
 	eng.Recompute(now)
 }
 
-// dedupeLatest keeps one row per dag_id (Ludo stg_astro_pipeline): the
-// deployment whose latest run is newest. Empty runs lose to a run.
+// dedupeLatest keeps one row per dag_id: the deployment whose latest run
+// is newest. Empty runs lose to a run.
 func dedupeLatest(dags []domain.DAG) []domain.DAG {
 	best := map[string]domain.DAG{}
 	order := make([]string, 0)

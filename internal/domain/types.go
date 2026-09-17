@@ -86,8 +86,8 @@ const (
 )
 
 // QualityTable is one warehouse relation InOrbit reads for live quality.
-// ValidX: {database}.DATATRUST_MARTS.VALIDATION_RESULT (inorbit-dbt validx_sources).
-// dbt: {database}.{schema}.{table} per DP (inorbit-dbt dbt_test_sources); often DBTLOGS.ELEMENTARY_TEST_RESULTS.
+// Validation: {database}.{schema}.{table} (defaults QUALITY.VALIDATION_RESULT).
+// dbt: {database}.{schema}.{table} (defaults DBTLOGS.ELEMENTARY_TEST_RESULTS).
 type QualityTable struct {
 	Enabled  bool   `json:"enabled"`
 	Database string `json:"database,omitempty"`

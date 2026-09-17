@@ -60,7 +60,7 @@ Live quality is per data product in config:
 
 | Source | Table | When |
 |---|---|---|
-| ValidX | `{database}.{schema}.{table}` (defaults `DATATRUST_MARTS.VALIDATION_RESULT`) | `quality.validx.enabled` |
+| Validation | `{database}.{schema}.{table}` (defaults `QUALITY.VALIDATION_RESULT`) | `quality.validx.enabled` |
 | dbt / Elementary | `{database}.{schema}.{table}` (defaults `DBTLOGS.ELEMENTARY_TEST_RESULTS`) | `quality.dbt.enabled` |
 
 Override `database`, `schema`, and `table` per product. Missing tables are skipped.

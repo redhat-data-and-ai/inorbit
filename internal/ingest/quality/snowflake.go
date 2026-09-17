@@ -189,7 +189,7 @@ func (s *Snowflake) Close() error {
 	return err
 }
 
-// LatestChecks loads the newest ValidX run and newest dbt/Elementary invocation per product.
+// LatestChecks loads the newest validation run and newest dbt/Elementary invocation per product.
 func (s *Snowflake) LatestChecks(ctx context.Context, products []domain.DataProduct) (checks []domain.Check, productIDs []string, err error) {
 	if s == nil || s.sess == nil {
 		return nil, nil, fmt.Errorf("snowflake client is nil")

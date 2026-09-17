@@ -166,7 +166,7 @@ func mustLive(lg *log.Logger, st *store.Memory, configPath string) *liveAirflow 
 	} else {
 		lg.Printf("snowflake quality ingest enabled account=%s role=%s warehouse=%s (one SSO session, reused until exit)", sc.Account, sc.Role, sc.Warehouse)
 		for _, p := range products {
-			lg.Printf("quality sources %s: validx=%s dbt=%s", p.ID, describeTable(p.ValidX), describeTable(p.DBTLogs))
+			lg.Printf("quality sources %s: validation=%s dbt=%s", p.ID, describeTable(p.ValidX), describeTable(p.DBTLogs))
 		}
 	}
 	var warns []string
@@ -177,7 +177,7 @@ func mustLive(lg *log.Logger, st *store.Memory, configPath string) *liveAirflow 
 		warns = append(warns, "No Airflow deployment URL. Set ASTRO_ORG_URL and astro.deployments[].id in the live config or .env.")
 	}
 	if sf == nil {
-		warns = append(warns, "Snowflake quality ingest is off, so ValidX/Elementary scores are missing. Set SNOWFLAKE_USER (SSO) and restart.")
+		warns = append(warns, "Snowflake quality ingest is off, so validation/Elementary scores are missing. Set SNOWFLAKE_USER (SSO) and restart.")
 	}
 	if len(warns) > 0 {
 		st.SetMeta(func(m *domain.PollMeta) { m.Warnings = warns })
@@ -300,7 +300,7 @@ func runWorkers(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engi
 		case t := <-qualityTick.C:
 			if mode == "demo" {
 				st.TouchQuality(t)
-				lg.Printf("quality poll (demo): ValidX/dbt rows already in the catalog")
+				lg.Printf("quality poll (demo): validation/dbt rows already in the catalog")
 				continue
 			}
 			if _, err := pollQuality(ctx, lg, st, eng, live, t); err != nil {

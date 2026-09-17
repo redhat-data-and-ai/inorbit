@@ -72,7 +72,7 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 		t.Fatal("ui js missing local timezone fetch banner")
 	}
 	if !strings.Contains(rec.Body.String(), "Last Run") || !strings.Contains(rec.Body.String(), "Reliability") {
-		t.Fatal("ui js missing Ludo-style pipeline columns")
+		t.Fatal("ui js missing expandable pipeline columns")
 	}
 	if !strings.Contains(rec.Body.String(), "alert-banner") || !strings.Contains(rec.Body.String(), "warnings") {
 		t.Fatal("ui js missing ingest warning banner")

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	DefaultValidXSchema = "DATATRUST_MARTS"
+	DefaultValidXSchema = "QUALITY"
 	DefaultValidXTable  = "VALIDATION_RESULT"
 	DefaultDBTSchema    = "DBTLOGS"
 	DefaultDBTTable     = "ELEMENTARY_TEST_RESULTS"
@@ -170,7 +170,7 @@ func (c File) Deployments() []astro.Deployment {
 	for _, d := range c.Astro.Deployments {
 		id := strings.TrimSpace(d.ID)
 		apiURL := strings.TrimSpace(d.AirflowAPIURL)
-		// Match count_astro_dags.py: base = f"{org}/{deployment_id}"
+		// Deployment root is {org}/{deployment_id} when airflow_api_url is omitted.
 		if apiURL == "" && org != "" && id != "" {
 			apiURL = org + "/" + id
 		}

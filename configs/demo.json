@@ -93,7 +93,7 @@
         "severity": "CRITICAL",
         "status": "FAILED",
         "source_type": "VALIDX",
-        "source_table": "ALPHA_DB.DATATRUST_MARTS.VALIDATION_RESULT",
+        "source_table": "ALPHA_DB.QUALITY.VALIDATION_RESULT",
         "is_cde": true,
         "element": "amount",
         "executed_ago": "20m",

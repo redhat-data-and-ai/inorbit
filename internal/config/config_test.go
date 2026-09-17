@@ -60,7 +60,7 @@ func TestLoadExpandsEnvAndSkipsEmptyURLs(t *testing.T) {
 	}
 	for _, p := range cfg.Products() {
 		if p.ID == "alpha" {
-			if !p.ValidX.Enabled || p.ValidX.Schema != "DATATRUST_MARTS" || p.ValidX.Table != "VALIDATION_RESULT" {
+			if !p.ValidX.Enabled || p.ValidX.Schema != "QUALITY" || p.ValidX.Table != "VALIDATION_RESULT" {
 				t.Fatalf("alpha validx %+v", p.ValidX)
 			}
 			if p.DBTLogs.Enabled {
@@ -133,7 +133,7 @@ func TestQualityTablesAreConfigDriven(t *testing.T) {
     {
       "id": "alpha",
       "quality": {
-        "validx": {"enabled": true, "database": "ALPHA_DB", "schema": "DATATRUST_MARTS", "table": "VALIDATION_RESULT"},
+        "validx": {"enabled": true, "database": "ALPHA_DB", "schema": "QUALITY", "table": "VALIDATION_RESULT"},
         "dbt": {"enabled": false, "database": "ALPHA_DB", "schema": "DBTLOGS", "table": "ELEMENTARY_TEST_RESULTS"}
       }
     },
@@ -158,14 +158,14 @@ func TestQualityTablesAreConfigDriven(t *testing.T) {
 		got[p.ID] = p
 	}
 	fc := got["alpha"]
-	if !fc.ValidX.Enabled || fc.ValidX.Database != "ALPHA_DB" || fc.ValidX.Schema != "DATATRUST_MARTS" || fc.ValidX.Table != "VALIDATION_RESULT" {
+	if !fc.ValidX.Enabled || fc.ValidX.Database != "ALPHA_DB" || fc.ValidX.Schema != "QUALITY" || fc.ValidX.Table != "VALIDATION_RESULT" {
 		t.Fatalf("alpha validx %+v", fc.ValidX)
 	}
 	if fc.DBTLogs.Enabled {
 		t.Fatalf("alpha dbt should be off: %+v", fc.DBTLogs)
 	}
 	bm := got["beta"]
-	if !bm.ValidX.Enabled || bm.ValidX.Database != "BETA_DB" || bm.ValidX.Schema != "DATATRUST_MARTS" {
+	if !bm.ValidX.Enabled || bm.ValidX.Database != "BETA_DB" || bm.ValidX.Schema != "QUALITY" {
 		t.Fatalf("beta validx %+v", bm.ValidX)
 	}
 	if !bm.DBTLogs.Enabled || bm.DBTLogs.Database != "BETA_DB" || bm.DBTLogs.Schema != "DBTLOGS" || bm.DBTLogs.Table != "ELEMENTARY_TEST_RESULTS" {

@@ -16,7 +16,7 @@
   --pf-info-bg: #e7f1fa;
   --pf-mast: #151515;
   --pf-radius: 3px;
-  --pf-font: "RedHatText", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --pf-font: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 * { box-sizing: border-box; }

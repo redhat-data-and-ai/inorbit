@@ -9,8 +9,8 @@ import (
 
 // Match assigns a DAG to a configured data product.
 // Prefer the explicit dag_id map, then dataproduct_name, then the first
-// non-system tag (Ludo stg_astro_dags), then any product-named tag, then
-// dag_id contains the product name (longest wins).
+// non-system tag, then any product-named tag, then dag_id contains the
+// product name (longest wins).
 func Match(dagID string, tags []string, products []domain.DataProduct, extra map[string]string) (domain.DataProduct, bool) {
 	return MatchDAG(dagID, tags, "", products, extra)
 }

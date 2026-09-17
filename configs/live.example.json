@@ -31,7 +31,7 @@
         "validx": {
           "enabled": true,
           "database": "ALPHA_DB",
-          "schema": "DATATRUST_MARTS",
+          "schema": "QUALITY",
           "table": "VALIDATION_RESULT"
         },
         "dbt": {
@@ -52,7 +52,7 @@
         "validx": {
           "enabled": true,
           "database": "BETA_DB",
-          "schema": "DATATRUST_MARTS",
+          "schema": "QUALITY",
           "table": "VALIDATION_RESULT"
         },
         "dbt": {
