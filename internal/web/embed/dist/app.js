@@ -144,7 +144,7 @@ function pipelineSummary(rows) {
 }
 
 function qualitySummary(rows) {
-  const list = (rows || []).filter((c) => c.source_type === "VALIDX" || c.source_type === "DBT_TEST");
+  const list = (rows || []).filter((c) => c.source_type === "VALIDATION" || c.source_type === "DBT_TEST");
   const failed = list.filter((c) => c.status === "FAILED").length;
   const warn = list.filter((c) => c.status === "WARNING").length;
   if (!list.length) return { label: "No checks", cls: "muted", detail: "Not configured" };
@@ -457,7 +457,7 @@ function overviewCharts(snap) {
 }
 
 function dqChecks(rows) {
-  return (rows || []).filter((c) => c.source_type === "VALIDX" || c.source_type === "DBT_TEST");
+  return (rows || []).filter((c) => c.source_type === "VALIDATION" || c.source_type === "DBT_TEST");
 }
 
 function rowMatch(q, parts) {
@@ -818,13 +818,13 @@ function renderDetail(route) {
     const failed = scoped.filter((c) => c.status === "FAILED").length;
     const warn = scoped.filter((c) => c.status === "WARNING").length;
     const passed = scoped.filter((c) => c.status === "PASSED").length;
-    const vx = all.filter((c) => c.source_type === "VALIDX").length;
+    const vx = all.filter((c) => c.source_type === "VALIDATION").length;
     const dbt = all.filter((c) => c.source_type === "DBT_TEST").length;
     const latestDbt = all.filter((c) => c.source_type === "DBT_TEST").map((c) => c.executed_at).filter(Boolean).sort().slice(-1)[0];
-    const latestVx = all.filter((c) => c.source_type === "VALIDX").map((c) => c.executed_at).filter(Boolean).sort().slice(-1)[0];
+    const latestVx = all.filter((c) => c.source_type === "VALIDATION").map((c) => c.executed_at).filter(Boolean).sort().slice(-1)[0];
     const emptyTitle = src === "DBT_TEST"
       ? "No Elementary rows in the latest dbt invocation for this product."
-      : src === "VALIDX"
+      : src === "VALIDATION"
         ? "No validation rows in the latest warehouse run for this product."
         : "No validation or Elementary checks in the latest warehouse run.";
     const emptyHint = all.length
@@ -843,7 +843,7 @@ function renderDetail(route) {
       ${tableToolbar(rows.length, scoped.length, "Filter checks",
         chipGroup([
           ["all", "All", all.length],
-          ["VALIDX", "Validation", vx],
+          ["VALIDATION", "Validation", vx],
           ["DBT_TEST", "Elementary", dbt],
         ], src, "source") +
         chipGroup([

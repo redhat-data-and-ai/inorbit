@@ -52,16 +52,16 @@ func TestLoadExpandsEnvAndSkipsEmptyURLs(t *testing.T) {
 	var alphaDB string
 	for _, p := range cfg.Products() {
 		if p.ID == "alpha" {
-			alphaDB = p.ValidXDB
+			alphaDB = p.ValidationDB
 		}
 	}
 	if alphaDB != "ALPHA_DB" {
-		t.Fatalf("validx db %q", alphaDB)
+		t.Fatalf("validation db %q", alphaDB)
 	}
 	for _, p := range cfg.Products() {
 		if p.ID == "alpha" {
-			if !p.ValidX.Enabled || p.ValidX.Schema != "QUALITY" || p.ValidX.Table != "VALIDATION_RESULT" {
-				t.Fatalf("alpha validx %+v", p.ValidX)
+			if !p.Validation.Enabled || p.Validation.Schema != "QUALITY" || p.Validation.Table != "VALIDATION_RESULT" {
+				t.Fatalf("alpha validation %+v", p.Validation)
 			}
 			if p.DBTLogs.Enabled {
 				t.Fatalf("dbt should default off, got %+v", p.DBTLogs)
@@ -133,14 +133,14 @@ func TestQualityTablesAreConfigDriven(t *testing.T) {
     {
       "id": "alpha",
       "quality": {
-        "validx": {"enabled": true, "database": "ALPHA_DB", "schema": "QUALITY", "table": "VALIDATION_RESULT"},
+        "validation": {"enabled": true, "database": "ALPHA_DB", "schema": "QUALITY", "table": "VALIDATION_RESULT"},
         "dbt": {"enabled": false, "database": "ALPHA_DB", "schema": "DBTLOGS", "table": "ELEMENTARY_TEST_RESULTS"}
       }
     },
     {
       "id": "beta",
       "quality": {
-        "validx": {"enabled": true, "database": "BETA_DB"},
+        "validation": {"enabled": true, "database": "BETA_DB"},
         "dbt": {"enabled": true, "database": "BETA_DB", "schema": "DBTLOGS", "table": "ELEMENTARY_TEST_RESULTS"}
       }
     }
@@ -158,15 +158,15 @@ func TestQualityTablesAreConfigDriven(t *testing.T) {
 		got[p.ID] = p
 	}
 	fc := got["alpha"]
-	if !fc.ValidX.Enabled || fc.ValidX.Database != "ALPHA_DB" || fc.ValidX.Schema != "QUALITY" || fc.ValidX.Table != "VALIDATION_RESULT" {
-		t.Fatalf("alpha validx %+v", fc.ValidX)
+	if !fc.Validation.Enabled || fc.Validation.Database != "ALPHA_DB" || fc.Validation.Schema != "QUALITY" || fc.Validation.Table != "VALIDATION_RESULT" {
+		t.Fatalf("alpha validation %+v", fc.Validation)
 	}
 	if fc.DBTLogs.Enabled {
 		t.Fatalf("alpha dbt should be off: %+v", fc.DBTLogs)
 	}
 	bm := got["beta"]
-	if !bm.ValidX.Enabled || bm.ValidX.Database != "BETA_DB" || bm.ValidX.Schema != "QUALITY" {
-		t.Fatalf("beta validx %+v", bm.ValidX)
+	if !bm.Validation.Enabled || bm.Validation.Database != "BETA_DB" || bm.Validation.Schema != "QUALITY" {
+		t.Fatalf("beta validation %+v", bm.Validation)
 	}
 	if !bm.DBTLogs.Enabled || bm.DBTLogs.Database != "BETA_DB" || bm.DBTLogs.Schema != "DBTLOGS" || bm.DBTLogs.Table != "ELEMENTARY_TEST_RESULTS" {
 		t.Fatalf("beta dbt %+v", bm.DBTLogs)

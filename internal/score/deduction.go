@@ -113,7 +113,7 @@ func Apply(c domain.Check, asOf time.Time, cfg Config) domain.Check {
 
 func displayName(src domain.SourceType) string {
 	switch src {
-	case domain.SrcValidX:
+	case domain.SrcValidation:
 		return "Validation"
 	case domain.SrcDBTTest:
 		return "dbt / Elementary"

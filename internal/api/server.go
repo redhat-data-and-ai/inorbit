@@ -173,7 +173,7 @@ func qualitySignals(checks []domain.Check) []domain.Check {
 	out := make([]domain.Check, 0, len(checks))
 	for _, c := range checks {
 		switch c.SourceType {
-		case domain.SrcValidX, domain.SrcDBTTest:
+		case domain.SrcValidation, domain.SrcDBTTest:
 			out = append(out, c)
 		}
 	}

@@ -192,7 +192,7 @@ func recGet(rec map[string]any, keys ...string) any {
 	return nil
 }
 
-func ValidXCheck(dp domain.DataProduct, rec map[string]any) (domain.Check, bool) {
+func ValidationCheck(dp domain.DataProduct, rec map[string]any) (domain.Check, bool) {
 	status := MapStatus(stringify(recGet(rec, "STATUS")))
 	if status == "" {
 		return domain.Check{}, false
@@ -211,15 +211,15 @@ func ValidXCheck(dp domain.DataProduct, rec map[string]any) (domain.Check, bool)
 	exec := asTime(recGet(rec, "RUN_TIME", "EXECUTED_AT"))
 	tags := stringify(recGet(rec, "TAGS", "TAGS_RAW"))
 	c := domain.Check{
-		ID:              fmt.Sprintf("%s:validx:%s:%s", dp.ID, runID, name),
+		ID:              fmt.Sprintf("%s:validation:%s:%s", dp.ID, runID, name),
 		DataProductID:   dp.ID,
 		DataProductName: dp.Name,
 		Name:            name,
 		Description:     stringify(recGet(rec, "DESCRIPTION", "CHECK_DESCRIPTION")),
 		Dimension:       MapDimension(stringify(recGet(rec, "DIMENSION")), tags, name),
-		Severity:        MapSeverity(stringify(recGet(rec, "SEVERITY")), "validx"),
+		Severity:        MapSeverity(stringify(recGet(rec, "SEVERITY")), "validation"),
 		Status:          status,
-		SourceType:      domain.SrcValidX,
+		SourceType:      domain.SrcValidation,
 		SourceTable:     stringify(recGet(rec, "TABLE_NAME")),
 		IsCDE:           asBool(recGet(rec, "IS_CDE")),
 		Element:         stringify(recGet(rec, "ELEMENT")),

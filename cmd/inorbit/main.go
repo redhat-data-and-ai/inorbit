@@ -166,7 +166,7 @@ func mustLive(lg *log.Logger, st *store.Memory, configPath string) *liveAirflow 
 	} else {
 		lg.Printf("snowflake quality ingest enabled account=%s role=%s warehouse=%s (one SSO session, reused until exit)", sc.Account, sc.Role, sc.Warehouse)
 		for _, p := range products {
-			lg.Printf("quality sources %s: validation=%s dbt=%s", p.ID, describeTable(p.ValidX), describeTable(p.DBTLogs))
+			lg.Printf("quality sources %s: validation=%s dbt=%s", p.ID, describeTable(p.Validation), describeTable(p.DBTLogs))
 		}
 	}
 	var warns []string

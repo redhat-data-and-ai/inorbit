@@ -41,16 +41,16 @@ func TestDBTCheckAccuracyFallback(t *testing.T) {
 	}
 }
 
-func TestValidXCheckLatestRun(t *testing.T) {
+func TestValidationCheckLatestRun(t *testing.T) {
 	dp := domain.DataProduct{ID: "catalog", Name: "catalog"}
-	c, ok := quality.ValidXCheck(dp, map[string]any{
+	c, ok := quality.ValidationCheck(dp, map[string]any{
 		"NAME": "row_count", "STATUS": "PASS", "SEVERITY": "HIGH",
 		"DIMENSION": "COMPLETENESS", "RUN_ID": "r1",
 	})
 	if !ok || c.Status != domain.CheckPassed || c.Dimension != domain.DimCompleteness {
 		t.Fatalf("%+v ok=%v", c, ok)
 	}
-	fallback, ok := quality.ValidXCheck(dp, map[string]any{
+	fallback, ok := quality.ValidationCheck(dp, map[string]any{
 		"STATUS": "FAIL", "TABLE_NAME": "MART.FACT", "ELEMENT": "qty", "RUN_ID": "r2",
 	})
 	if !ok || fallback.Name != "MART.FACT qty" {

@@ -219,10 +219,10 @@ func (s *Snowflake) productChecks(ctx context.Context, p domain.DataProduct) ([]
 	var out []domain.Check
 	var errs []string
 
-	if p.ValidX.Enabled {
-		rel, err := qualified(p.ValidX)
+	if p.Validation.Enabled {
+		rel, err := qualified(p.Validation)
 		if err != nil {
-			errs = append(errs, "validx: "+err.Error())
+			errs = append(errs, "validation: "+err.Error())
 		} else {
 			vxSQL := `
 with latest as (
@@ -236,12 +236,12 @@ inner join latest on latest.run_id = vr.run_id`
 			vx, err := s.query(ctx, vxSQL)
 			if err != nil {
 				if !isMissingObject(err) {
-					errs = append(errs, "validx: "+err.Error())
+					errs = append(errs, "validation: "+err.Error())
 				}
 			} else {
 				for _, rec := range vx {
 					stripSensitive(rec)
-					if c, ok := ValidXCheck(p, rec); ok {
+					if c, ok := ValidationCheck(p, rec); ok {
 						out = append(out, c)
 					}
 				}

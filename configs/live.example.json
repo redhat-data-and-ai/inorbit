@@ -28,7 +28,7 @@
       "type": "aggregate",
       "owner_team": "platform",
       "quality": {
-        "validx": {
+        "validation": {
           "enabled": true,
           "database": "ALPHA_DB",
           "schema": "QUALITY",
@@ -49,7 +49,7 @@
       "owner_team": "platform",
       "dag_ids": ["beta_daily"],
       "quality": {
-        "validx": {
+        "validation": {
           "enabled": true,
           "database": "BETA_DB",
           "schema": "QUALITY",

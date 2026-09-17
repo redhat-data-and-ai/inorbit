@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	DefaultValidXSchema = "QUALITY"
-	DefaultValidXTable  = "VALIDATION_RESULT"
-	DefaultDBTSchema    = "DBTLOGS"
-	DefaultDBTTable     = "ELEMENTARY_TEST_RESULTS"
+	DefaultValidationSchema = "QUALITY"
+	DefaultValidationTable  = "VALIDATION_RESULT"
+	DefaultDBTSchema        = "DBTLOGS"
+	DefaultDBTTable         = "ELEMENTARY_TEST_RESULTS"
 )
 
 // File is the on-disk live/demo JSON config. ${ENV} values are expanded.
@@ -56,7 +56,7 @@ type ProductConfig struct {
 	Type         string               `json:"type"`
 	OwnerTeam    string               `json:"owner_team"`
 	SlackChannel string               `json:"slack_channel"`
-	ValidXDB     string               `json:"validx_database"`
+	ValidationDB string               `json:"validation_database"`
 	Quality      ProductQualityConfig `json:"quality"`
 	DAGIDs       []string             `json:"dag_ids"`
 }
@@ -110,8 +110,8 @@ type DemoCheck struct {
 }
 
 type ProductQualityConfig struct {
-	ValidX QualityTableConfig `json:"validx"`
-	DBT    QualityTableConfig `json:"dbt"`
+	Validation QualityTableConfig `json:"validation"`
+	DBT        QualityTableConfig `json:"dbt"`
 }
 
 type QualityTableConfig struct {
@@ -198,7 +198,7 @@ func (c File) Products() []domain.DataProduct {
 		if name == "" {
 			name = id
 		}
-		vxTable := resolveQualityTable(p.Quality.ValidX, firstNonEmpty(p.ValidXDB, defaultDPDatabase(id)), DefaultValidXSchema, DefaultValidXTable, true)
+		vxTable := resolveQualityTable(p.Quality.Validation, firstNonEmpty(p.ValidationDB, defaultDPDatabase(id)), DefaultValidationSchema, DefaultValidationTable, true)
 		dbtTable := resolveQualityTable(p.Quality.DBT, firstNonEmpty(p.Quality.DBT.Database, vxTable.Database), DefaultDBTSchema, DefaultDBTTable, false)
 		out = append(out, domain.DataProduct{
 			ID:           strings.ToLower(strings.TrimSpace(id)),
@@ -206,8 +206,8 @@ func (c File) Products() []domain.DataProduct {
 			Type:         p.Type,
 			OwnerTeam:    p.OwnerTeam,
 			SlackChannel: p.SlackChannel,
-			ValidXDB:     vxTable.Database,
-			ValidX:       vxTable,
+			ValidationDB: vxTable.Database,
+			Validation:   vxTable,
 			DBTLogs:      dbtTable,
 		})
 	}

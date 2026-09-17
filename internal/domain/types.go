@@ -72,7 +72,7 @@ const (
 type SourceType string
 
 const (
-	SrcValidX         SourceType = "VALIDX"
+	SrcValidation     SourceType = "VALIDATION"
 	SrcDBTTest        SourceType = "DBT_TEST"
 	SrcAstroFreshness SourceType = "ASTRO_FRESHNESS"
 	SrcAstroPipeline  SourceType = "ASTRO_PIPELINE"
@@ -101,8 +101,8 @@ type DataProduct struct {
 	OwnerTeam    string       `json:"owner_team,omitempty"`
 	SlackChannel string       `json:"slack_channel,omitempty"`
 	Type         string       `json:"dp_type,omitempty"`
-	ValidXDB     string       `json:"validx_database,omitempty"`
-	ValidX       QualityTable `json:"validx,omitempty"`
+	ValidationDB string       `json:"validation_database,omitempty"`
+	Validation   QualityTable `json:"validation,omitempty"`
 	DBTLogs      QualityTable `json:"dbt_logs,omitempty"`
 }
 
@@ -187,7 +187,7 @@ type HealthStatus struct {
 	FailedChecks           int         `json:"failed_checks"`
 	WarningChecks          int         `json:"warning_checks"`
 	AstroCheckCount        int         `json:"astro_check_count"`
-	ValidXCheckCount       int         `json:"validx_check_count"`
+	ValidationCheckCount   int         `json:"validation_check_count"`
 	StatusMessage          string      `json:"status_message"`
 	EvaluatedAt            time.Time   `json:"evaluated_at"`
 }

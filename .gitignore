@@ -16,3 +16,4 @@ coverage.html
 .vscode/
 tmp/
 .cursor/
+/docs/

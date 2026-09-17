@@ -7,7 +7,7 @@
       "owner_team": "platform",
       "slack_channel": "#dp-alpha",
       "quality": {
-        "validx": {
+        "validation": {
           "enabled": true,
           "database": "ALPHA_DB"
         },
@@ -24,7 +24,7 @@
       "owner_team": "platform",
       "slack_channel": "#dp-beta",
       "quality": {
-        "validx": {
+        "validation": {
           "enabled": true,
           "database": "BETA_DB"
         },
@@ -92,7 +92,7 @@
         "dimension": "ACCURACY",
         "severity": "CRITICAL",
         "status": "FAILED",
-        "source_type": "VALIDX",
+        "source_type": "VALIDATION",
         "source_table": "ALPHA_DB.QUALITY.VALIDATION_RESULT",
         "is_cde": true,
         "element": "amount",
@@ -106,7 +106,7 @@
         "dimension": "COMPLETENESS",
         "severity": "MEDIUM",
         "status": "PASSED",
-        "source_type": "VALIDX",
+        "source_type": "VALIDATION",
         "executed_ago": "20m"
       },
       {
@@ -127,7 +127,7 @@
         "dimension": "CONSISTENCY",
         "severity": "HIGH",
         "status": "PASSED",
-        "source_type": "VALIDX",
+        "source_type": "VALIDATION",
         "executed_ago": "40m"
       }
     ]
