@@ -8,7 +8,7 @@ import (
 	"github.com/inorbit/inorbit/internal/pipeline"
 )
 
-func f64(v float64) *float64 { return &v }
+func f64(v float64) *float64    { return &v }
 func ts(t time.Time) *time.Time { return &t }
 
 func TestSLAClockFreshnessRedWithoutNewAstroCall(t *testing.T) {
@@ -41,6 +41,24 @@ func TestSLAClockGreenWhenNextExpectedInFuture(t *testing.T) {
 	ev := pipeline.Tick(dag, now)
 	if ev.FreshnessBand != domain.FreshnessGreen || ev.Overall != domain.OverallTrusted {
 		t.Fatalf("%+v", ev)
+	}
+}
+
+func TestRollupSkipsCustomDAGs(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	last := now.Add(-10 * time.Hour)
+	custom := domain.DAG{
+		DAGID: "adhoc", Status: "FAILED", IsCustom: true, IsPaused: true,
+		CompletedAt: ts(last),
+	}
+	ok := domain.DAG{
+		DAGID: "hourly", Status: "SUCCESS", CompletedAt: ts(now.Add(-10 * time.Minute)),
+		IntervalMins: f64(60), SLAMinutes: f64(30), NextExpectedAt: ts(now.Add(50 * time.Minute)),
+		IsPrimary: true,
+	}
+	got := pipeline.RollupFreshness(domain.DataProduct{ID: "p", Name: "p"}, []domain.DAG{custom, ok}, now)
+	if got.FreshnessStatus != domain.FreshnessGreen {
+		t.Fatalf("custom failure should not roll up, got %s %s", got.FreshnessStatus, got.StatusReason)
 	}
 }
 

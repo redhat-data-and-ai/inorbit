@@ -33,12 +33,16 @@ type Client struct {
 }
 
 type dagAPI struct {
-	DAGID           string          `json:"dag_id"`
-	IsPaused        bool            `json:"is_paused"`
-	Tags            json.RawMessage `json:"tags"`
-	NextDagRun      string          `json:"next_dagrun"`
-	NextDagRunAlt   string          `json:"next_dag_run"`
-	DataproductName string          `json:"dataproduct_name"`
+	DAGID            string          `json:"dag_id"`
+	IsPaused         bool            `json:"is_paused"`
+	IsStale          bool            `json:"is_stale"`
+	IsActive         *bool           `json:"is_active"`
+	Tags             json.RawMessage `json:"tags"`
+	NextDagRun       string          `json:"next_dagrun"`
+	NextDagRunAlt    string          `json:"next_dag_run"`
+	DataproductName  string          `json:"dataproduct_name"`
+	ScheduleInterval json.RawMessage `json:"schedule_interval"`
+	TimetableSummary string          `json:"timetable_summary"`
 }
 
 type dagRunAPI struct {
@@ -121,7 +125,9 @@ func (c *Client) fetchDeployment(ctx context.Context, dep Deployment, products [
 	}
 	keep := make([]matched, 0)
 	withTags := 0
-	var sample []string
+	skipped := 0
+	var unmatched []string
+	var matchedIDs []string
 	for _, raw := range listed {
 		tags := parseTagNames(raw.Tags)
 		if len(tags) > 0 {
@@ -129,15 +135,26 @@ func (c *Client) fetchDeployment(ctx context.Context, dep Deployment, products [
 		}
 		product, ok := MatchDAG(raw.DAGID, tags, raw.DataproductName, products, extra)
 		if !ok {
-			if len(sample) < 12 {
-				sample = append(sample, raw.DAGID)
+			if len(unmatched) < 12 {
+				unmatched = append(unmatched, raw.DAGID)
 			}
 			continue
 		}
+		var flags domain.DAG
+		flags.DAGID = raw.DAGID
+		parseTags(&flags, tags)
+		inferCustomFromID(&flags)
+		if !keepDAG(raw, flags) {
+			skipped++
+			continue
+		}
+		if len(matchedIDs) < 12 {
+			matchedIDs = append(matchedIDs, raw.DAGID)
+		}
 		keep = append(keep, matched{raw: raw, product: product})
 	}
-	c.logf("airflow %s: listed=%d with_tags=%d matched=%d unmatched=%d sample=%s",
-		dep.Name, len(listed), withTags, len(keep), len(listed)-len(keep), strings.Join(sample, ","))
+	c.logf("airflow %s: listed=%d with_tags=%d matched=%d skipped_inactive=%d unmatched=%d kept=%s dropped=%s",
+		dep.Name, len(listed), withTags, len(keep), skipped, len(listed)-len(keep)-skipped, strings.Join(matchedIDs, ","), strings.Join(unmatched, ","))
 
 	out := make([]domain.DAG, len(keep))
 	var wg sync.WaitGroup
@@ -169,7 +186,27 @@ func (c *Client) fetchDeployment(ctx context.Context, dep Deployment, products [
 		}(i, item)
 	}
 	wg.Wait()
-	return out, nil
+	kept := out[:0]
+	for _, d := range out {
+		if d.DAGID == "" || !dagAvailable(d) {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept, nil
+}
+
+func dagAvailable(d domain.DAG) bool {
+	if d.IsCustom {
+		return true
+	}
+	if strings.TrimSpace(d.Status) != "" {
+		return true
+	}
+	if d.NextExpectedAt != nil || d.LastSuccessAt != nil || d.StartedAt != nil || d.CompletedAt != nil {
+		return true
+	}
+	return false
 }
 
 func (c *Client) apiBase(dep Deployment) string {
@@ -204,9 +241,9 @@ func (c *Client) listDAGs(ctx context.Context, dep Deployment) ([]dagAPI, error)
 }
 
 func (c *Client) listDAGsFrom(ctx context.Context, depName, base string) ([]dagAPI, error) {
-	dags, err := c.listDAGsPaged(ctx, depName, base, true)
+	dags, err := c.listDAGsPaged(ctx, depName, base, false)
 	if err != nil && excludeStaleUnsupported(err) {
-		return c.listDAGsPaged(ctx, depName, base, false)
+		return c.listDAGsPaged(ctx, depName, base, true)
 	}
 	return dags, err
 }
@@ -431,7 +468,12 @@ func normalize(dep Deployment, dp domain.DataProduct, raw dagAPI, run, lastSucce
 		IsPaused:        raw.IsPaused,
 		AstroURL:        GridURL(dep, raw.DAGID),
 	}
+	if strings.Contains(d.AstroURL, unknownDeploymentID) {
+		d.AstroURL = ""
+	}
 	parseTags(&d, parseTagNames(raw.Tags))
+	inferCustomFromID(&d)
+	applySLADefaults(&d, raw.scheduleText())
 	next := raw.nextRun()
 	if d.IsPrimary || d.SLAMinutes != nil || d.IntervalMins != nil || next != "" {
 		d.SilentMonitored = true
@@ -466,7 +508,9 @@ func normalize(dep Deployment, dp domain.DataProduct, raw dagAPI, run, lastSucce
 		d.NextExpectedAt = &n
 	}
 	d.PipelineType = "DAG"
-	d.FrequencyDisplay = pipeline.FrequencyDisplay(d.IntervalMins)
+	if strings.TrimSpace(d.FrequencyDisplay) == "" {
+		d.FrequencyDisplay = pipeline.FrequencyDisplay(d.IntervalMins)
+	}
 	return d
 }
 
@@ -487,10 +531,31 @@ func parseTags(d *domain.DAG, tags []string) {
 			d.IsCustom = true
 		case strings.HasPrefix(name, "sla:interval_mins:"):
 			v := numSuffix(name)
-			d.IntervalMins = &v
+			if v > 0 {
+				d.IntervalMins = &v
+			}
 		case strings.HasPrefix(name, "sla:threshold_mins:"):
 			v := numSuffix(name)
-			d.SLAMinutes = &v
+			if v > 0 {
+				d.SLAMinutes = &v
+			}
+		case strings.HasPrefix(name, "sla:frequency_display:"):
+			label := strings.TrimSpace(strings.TrimPrefix(name, "sla:frequency_display:"))
+			if label != "" {
+				d.FrequencyDisplay = "Every " + label
+			}
+		}
+	}
+}
+
+func inferCustomFromID(d *domain.DAG) {
+	if d.IsCustom {
+		return
+	}
+	for _, tok := range dagIDTokens(d.DAGID) {
+		if tok == "custom" {
+			d.IsCustom = true
+			return
 		}
 	}
 }
