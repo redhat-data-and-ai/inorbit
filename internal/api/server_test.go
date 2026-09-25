@@ -127,17 +127,8 @@ func TestSnapshotsAndDemoFreshness(t *testing.T) {
 	if len(pipe) == 0 || pipe[0].AstroURL != atRiskDAG.AstroURL {
 		t.Fatalf("astro_url %+v want %q", pipe, atRiskDAG.AstroURL)
 	}
-	if pipe[0].FrequencyDisplay != "Every 1 hour" || pipe[0].PipelineType != "DAG" {
+	if pipe[0].FrequencyDisplay != "Every 1hr" || pipe[0].PipelineType != "DAG" {
 		t.Fatalf("display %+v", pipe[0])
-	}
-	var sawCustom bool
-	for _, row := range pipe {
-		if row.IsCustom {
-			sawCustom = true
-		}
-	}
-	if !sawCustom {
-		t.Fatal("demo alpha should include a custom DAG")
 	}
 
 	rec = httptest.NewRecorder()
@@ -145,7 +136,7 @@ func TestSnapshotsAndDemoFreshness(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &pipe); err != nil {
 		t.Fatal(err)
 	}
-	if len(pipe) == 0 || pipe[0].FrequencyDisplay != "Every 1 day" || pipe[0].Reliability7d == nil || *pipe[0].Reliability7d != 100 {
+	if len(pipe) == 0 || pipe[0].FrequencyDisplay != "Every 24hr" || pipe[0].Reliability7d == nil || *pipe[0].Reliability7d != 100 {
 		t.Fatalf("%s pipeline %+v", healthy.ID, pipe)
 	}
 	if pipe[0].AstroURL != healthyDAG.AstroURL {

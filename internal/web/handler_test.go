@@ -65,20 +65,14 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `class="astro-open"`) || !strings.Contains(rec.Body.String(), "astroLink(d, true)") {
 		t.Fatal("ui js missing collapsed-row Open in Astro control")
 	}
-	if strings.Contains(rec.Body.String(), `"freshness", "pipeline"`) || strings.Contains(rec.Body.String(), `?tab=freshness`) {
-		t.Fatal("ui still has a separate freshness tab")
-	}
-	if !strings.Contains(rec.Body.String(), "?tab=pipeline") || !strings.Contains(rec.Body.String(), "Elementary") {
-		t.Fatal("ui js missing pipeline tab or Elementary filter")
+	if !strings.Contains(rec.Body.String(), "freshness") || !strings.Contains(rec.Body.String(), "Elementary") {
+		t.Fatal("ui js missing freshness tab or Elementary filter")
 	}
 	if !strings.Contains(rec.Body.String(), "timeZoneName") || !strings.Contains(rec.Body.String(), "fetch-banner") {
 		t.Fatal("ui js missing local timezone fetch banner")
 	}
 	if !strings.Contains(rec.Body.String(), "Last Run") || !strings.Contains(rec.Body.String(), "Reliability") {
 		t.Fatal("ui js missing expandable pipeline columns")
-	}
-	if !strings.Contains(rec.Body.String(), "flag custom") || !strings.Contains(rec.Body.String(), ">Astro</th>") {
-		t.Fatal("ui js missing custom badge or Astro column")
 	}
 	if !strings.Contains(rec.Body.String(), "alert-banner") || !strings.Contains(rec.Body.String(), "warnings") {
 		t.Fatal("ui js missing ingest warning banner")

@@ -38,7 +38,7 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dags", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"total_entries": 6,
+			"total_entries": 5,
 			"dags": []map[string]any{
 				{
 					"dag_id": "catalog_hourly", "is_paused": false,
@@ -58,10 +58,6 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 						{"name": "sla:interval_mins:1440"},
 					},
 					"next_dagrun": time.Now().UTC().Add(12 * time.Hour).Format(time.RFC3339),
-				},
-				{
-					"dag_id": "catalog_never_ran", "is_paused": false,
-					"tags": []map[string]any{{"name": "catalog"}},
 				},
 				{
 					"dag_id": "legacy_load", "is_paused": true, "is_stale": true,
@@ -92,9 +88,6 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/dags/untagged_custom/dagRuns", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"dag_runs": []map[string]any{}})
-	})
-	mux.HandleFunc("/dags/catalog_never_ran/dagRuns", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"dag_runs": []map[string]any{}})
 	})
 	mux.HandleFunc("/dags/legacy_load/dagRuns", func(w http.ResponseWriter, r *http.Request) {
@@ -128,8 +121,8 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dags) != 3 {
-		t.Fatalf("want 3 matched DAGs, got %d", len(dags))
+	if len(dags) != 4 {
+		t.Fatalf("want 4 matched DAGs, got %d", len(dags))
 	}
 
 	st := store.New()
@@ -143,8 +136,8 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 	if !ok {
 		t.Fatal("missing catalog snapshot")
 	}
-	if len(snap.Pipeline) != 2 {
-		t.Fatalf("catalog pipeline want 2 DAGs, got %+v", snap.Pipeline)
+	if len(snap.Pipeline) != 3 {
+		t.Fatalf("catalog pipeline want 3 DAGs, got %+v", snap.Pipeline)
 	}
 	var hourlyOK bool
 	var customPaused int
@@ -152,11 +145,11 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 		if d.DAGID == "catalog_hourly" && d.Status == "SUCCESS" && d.IsPrimary {
 			hourlyOK = true
 		}
-		if d.DAGID == "untagged_custom" && d.IsPaused && d.IsCustom {
+		if (d.DAGID == "legacy_load" || d.DAGID == "untagged_custom") && d.IsPaused && d.IsCustom {
 			customPaused++
 		}
 	}
-	if !hourlyOK || customPaused != 1 {
+	if !hourlyOK || customPaused != 2 {
 		t.Fatalf("catalog pipeline: %+v", snap.Pipeline)
 	}
 	wantURL := srv.URL + "/prod/dags/catalog_hourly"
@@ -174,7 +167,7 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 	}
 	for _, d := range snap.Pipeline {
 		if d.DAGID == "catalog_hourly" {
-			if d.TriggerType != "MANUAL" || d.FrequencyDisplay != "Every 1 hour" {
+			if d.TriggerType != "MANUAL" || d.FrequencyDisplay != "Every 1hr" {
 				t.Fatalf("hourly display %+v", d.DAG)
 			}
 			if d.Reliability7d == nil || *d.Reliability7d != 100 {

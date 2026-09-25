@@ -47,9 +47,7 @@ func (e *Engine) Recompute(now time.Time) {
 				ComputedAt:                  now,
 			}
 			pipe = append(pipe, ps)
-			if !dag.IsCustom {
-				checks = append(checks, virtualChecks(dp, dag, ev, now)...)
-			}
+			checks = append(checks, virtualChecks(dp, dag, ev, now)...)
 		}
 
 		for i := range checks {
