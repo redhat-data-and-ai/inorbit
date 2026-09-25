@@ -108,9 +108,9 @@ func pipelineSLA(dag domain.DAG, now time.Time) domain.PipelineSLA {
 func overallStatus(dag domain.DAG, now time.Time, fresh domain.FreshnessBand, sla domain.PipelineSLA, age *float64) (domain.OverallStatus, string) {
 	st := strings.ToUpper(dag.Status)
 	slaM := slaMins(dag)
-	ageStr := "?"
+	ageStr := "unknown"
 	if age != nil {
-		ageStr = fmt.Sprintf("%.0f", math.Round(*age))
+		ageStr = FormatMins(*age)
 	}
 
 	if st == "FAILED" {
@@ -129,10 +129,10 @@ func overallStatus(dag domain.DAG, now time.Time, fresh domain.FreshnessBand, sl
 	if dag.IsPaused && dag.NextExpectedAt != nil {
 		overdue := now.Sub(dag.NextExpectedAt.UTC()).Minutes()
 		if overdue > slaM*2 {
-			return domain.OverallFailed, fmt.Sprintf("DAG is paused and critically overdue — data is %sm old (2x SLA exceeded)", ageStr)
+			return domain.OverallFailed, fmt.Sprintf("DAG is paused and critically overdue — data is %s old (2x SLA exceeded)", ageStr)
 		}
 		if fresh == domain.FreshnessRed {
-			return domain.OverallDelayed, fmt.Sprintf("DAG is paused and missed expected scheduled run — data is %sm old", ageStr)
+			return domain.OverallDelayed, fmt.Sprintf("DAG is paused and missed expected scheduled run — data is %s old", ageStr)
 		}
 	}
 	if st == "RUNNING" && dag.SilentMonitored && dag.StartedAt != nil {
@@ -148,7 +148,7 @@ func overallStatus(dag domain.DAG, now time.Time, fresh domain.FreshnessBand, sl
 		return domain.OverallRunning, ""
 	}
 	if fresh == domain.FreshnessRed {
-		return domain.OverallAtRisk, fmt.Sprintf("Data freshness SLA breached — data is %sm old", ageStr)
+		return domain.OverallAtRisk, fmt.Sprintf("Data SLA breached — data is %s old", ageStr)
 	}
 	if sla == domain.SLABreach {
 		return domain.OverallAtRisk, fmt.Sprintf("Pipeline SLA breach — duration %.0fm exceeds threshold", math.Round(dag.DurationSeconds/60))
@@ -189,7 +189,7 @@ func RollupFreshness(dp domain.DataProduct, dags []domain.DAG, now time.Time) do
 	var worstSLA domain.PipelineSLA = domain.SLAOK
 	var delay *float64
 	for _, d := range dags {
-		if d.IsCustom && d.IsPaused {
+		if d.IsCustom {
 			continue
 		}
 		ev := Tick(d, now)

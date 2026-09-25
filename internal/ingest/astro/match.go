@@ -9,8 +9,8 @@ import (
 
 // Match assigns a DAG to a configured data product.
 // Prefer the explicit dag_id map, then dataproduct_name, then the first
-// non-system tag, then any product-named tag, then dag_id contains the
-// product name (longest wins).
+// non-system tag, then any product-named tag, then a dag_id path token
+// equal to the product id/name (longest wins).
 func Match(dagID string, tags []string, products []domain.DataProduct, extra map[string]string) (domain.DataProduct, bool) {
 	return MatchDAG(dagID, tags, "", products, extra)
 }
@@ -40,24 +40,56 @@ func MatchDAG(dagID string, tags []string, dataproductName string, products []do
 		}
 	}
 
-	lowerDAG := canon(dagID)
 	bestLen := 0
 	var best domain.DataProduct
 	for _, p := range products {
-		for _, needle := range []string{canon(p.Name), canon(p.ID)} {
-			if needle == "" {
-				continue
-			}
-			if strings.Contains(lowerDAG, needle) && len(needle) > bestLen {
-				best = p
-				bestLen = len(needle)
-			}
+		if n := dagIDProductMatchLen(dagID, p); n > bestLen {
+			best = p
+			bestLen = n
 		}
 	}
 	if bestLen > 0 {
 		return best, true
 	}
 	return domain.DataProduct{}, false
+}
+
+// dagIDProductMatchLen is the length of the product id/name token found in dag_id.
+// Tokens are split on non-alphanumerics so a bare "daily" DAG does not attach to
+// a product named "inorbit", while dbt_inorbit_daily still does.
+func dagIDProductMatchLen(dagID string, p domain.DataProduct) int {
+	best := 0
+	for _, needle := range []string{canon(p.ID), canon(p.Name)} {
+		if needle == "" {
+			continue
+		}
+		for _, tok := range dagIDTokens(dagID) {
+			if tok == needle && len(needle) > best {
+				best = len(needle)
+			}
+		}
+	}
+	return best
+}
+
+func dagIDTokens(id string) []string {
+	var b strings.Builder
+	var out []string
+	flush := func() {
+		if t := canon(b.String()); t != "" {
+			out = append(out, t)
+		}
+		b.Reset()
+	}
+	for _, r := range strings.ToLower(id) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
 }
 
 func lookupProduct(products []domain.DataProduct, key string) (domain.DataProduct, bool) {

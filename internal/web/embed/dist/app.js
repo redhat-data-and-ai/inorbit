@@ -24,7 +24,9 @@ function parseRoute() {
   const u = new URL(raw, "http://ui.local");
   const parts = u.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
   if (parts[0] === "data-product" && parts[1]) {
-    return { view: "detail", id: decodeURIComponent(parts[1]), tab: u.searchParams.get("tab") || "overview" };
+    let tab = u.searchParams.get("tab") || "overview";
+    if (tab === "freshness" || tab === "sla") tab = "pipeline";
+    return { view: "detail", id: decodeURIComponent(parts[1]), tab };
   }
   return { view: "list", id: "", tab: "" };
 }
@@ -175,9 +177,21 @@ function dagNameCell(d) {
   return `<a class="dag-link" href="${esc(d.astro_url)}" target="_blank" rel="noopener noreferrer" title="Open ${name} in Astro">${name}</a>`;
 }
 
+function fmtSpan(v, empty) {
+  if (v == null || v === "" || Number.isNaN(Number(v))) return empty || "—";
+  const mins = Math.max(0, Math.round(Number(v)));
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  const parts = [];
+  if (days) parts.push(days + (days === 1 ? " day" : " days"));
+  if (hours) parts.push(hours + (hours === 1 ? " hour" : " hours"));
+  if (m || !parts.length) parts.push(m + " min");
+  return parts.join(" ");
+}
+
 function fmtMins(v) {
-  if (v == null || v === "" || Number.isNaN(Number(v))) return "—";
-  return Math.round(Number(v)) + "m";
+  return fmtSpan(v, "—");
 }
 
 function fmtPct(v) {
@@ -238,50 +252,62 @@ function pipelineRows(d) {
   const key = dagKey(d);
   const open = !!state.expanded[key];
   const note = d.dag_overall_status_description || "";
+  const custom = !!d.dag_is_custom;
   const badges = [
     d.is_primary_dag ? `<span class="flag">Primary</span>` : "",
     d.dag_is_paused ? `<span class="flag muted">Paused</span>` : "",
-    d.dag_is_custom ? `<span class="flag muted">Custom</span>` : "",
+    custom ? `<span class="flag custom">Custom</span>` : "",
   ].filter(Boolean).join("");
-  const main = `<tr class="pipe-row ${open ? "is-open" : ""}">
+  const freq = d.dag_frequency_display || (custom ? "Custom" : "Unscheduled");
+  const slaVal = custom && (d.dag_sla_minutes == null) ? "Not scored" : fmtSpan(d.dag_sla_minutes, "—");
+  const ageVal = d.dag_data_age_mins == null ? (lastRunAt(d) ? fmtSpan(ageMinsFrom(d), "No runs") : "No runs") : fmtSpan(d.dag_data_age_mins, "No runs");
+  const statusLabel = d.dag_is_paused ? labelAs("PAUSED", "Paused") : label(d.dag_status);
+  const main = `<tr class="pipe-row ${open ? "is-open" : ""} ${custom ? "is-custom" : ""}">
     <td class="col-expand">
       <button type="button" class="expand" data-expand="${esc(key)}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} ${esc(d.dag_id)}">
         <span aria-hidden="true">${open ? "▾" : "▸"}</span>
       </button>
     </td>
     <td class="pipe-name">
-      <div class="pipe-id">${dagNameCell(d)}</div>
+      <div class="pipe-id">${esc(d.dag_id)}</div>
       <div class="pipe-meta">${esc(d.astro_deployment_name || "Astro")} · ${esc(d.pipeline_type || "DAG")}${badges ? " " + badges : ""}</div>
-      ${d.astro_url ? astroLink(d, true) : ""}
     </td>
     <td class="pipe-status">
-      ${label(d.dag_status)}
-      <div class="pipe-meta">${esc(d.trigger_type || "—")}</div>
-      ${labelAs(d.dag_overall_status, overallPretty(d.dag_overall_status))}
+      ${statusLabel}
+      <div class="pipe-meta">${esc(d.trigger_type || (custom ? "Custom" : "—"))}</div>
       ${note ? `<div class="pipe-note">${esc(note)}</div>` : ""}
     </td>
-    <td>${label(d.dag_pipeline_sla_status)}</td>
+    <td>${custom ? labelAs("CUSTOM", "Not scored") : label(d.dag_pipeline_sla_status)}</td>
     <td>${fmtRunClock(lastRunAt(d))}</td>
-    <td>${fmtRunClock(d.dag_next_expected_at)}</td>
+    <td>${d.dag_next_expected_at ? fmtRunClock(d.dag_next_expected_at) : `<span class="muted-cell">${esc(custom ? "Custom" : "No next run")}</span>`}</td>
     <td class="pipe-timing">
-      <div><span>Frequency</span> ${esc(d.dag_frequency_display || "—")}</div>
+      <div><span>Interval</span> ${esc(freq)}</div>
+      <div><span>Age</span> ${esc(ageVal)}</div>
       <div><span>Duration</span> ${esc(fmtDuration(d))}</div>
-      <div><span>SLA</span> ${esc(fmtMins(d.dag_sla_minutes))}</div>
+      <div><span>SLA</span> ${esc(slaVal)}</div>
     </td>
-    <td class="pipe-rel">${reliabilityCell(d)}</td>
+    <td class="pipe-rel">${reliabilityCell(d)}${custom ? `<div class="pipe-meta">Not scored</div>` : ""}</td>
+    <td class="col-astro">${d.astro_url ? astroLink(d, true) : `<span class="muted-cell">—</span>`}</td>
   </tr>`;
   if (!open) return main;
-  return main + `<tr class="pipe-detail"><td colspan="8">
+  return main + `<tr class="pipe-detail"><td colspan="9">
     <div class="detail-grid">
       <div><span>Astro</span>${astroLink(d)}</div>
       <div><span>Run id</span>${esc(d.external_run_id || "—")}</div>
       <div><span>Last success</span>${fmtWhen(d.last_successful_at)}</div>
       <div><span>Started</span>${fmtWhen(d.dag_started_at)}</div>
-      <div><span>Freshness</span>${label(d.dag_freshness_status)}</div>
-      <div><span>Overall</span>${label(d.dag_overall_status)}</div>
+      <div><span>Status</span>${label(d.dag_overall_status)}</div>
+      <div><span>SLA</span>${label(d.dag_pipeline_sla_status)}</div>
+      ${custom ? `<div><span>Custom</span>Excluded from health score and product SLA age</div>` : ""}
       ${d.error_message ? `<div class="span2"><span>Error</span>${esc(d.error_message)}</div>` : ""}
     </div>
   </td></tr>`;
+}
+
+function ageMinsFrom(d) {
+  const t = parseDate(lastRunAt(d));
+  if (!t) return null;
+  return (Date.now() - t.getTime()) / 60000;
 }
 
 function sortDAGs(list) {
@@ -564,8 +590,7 @@ function tilesHTML(snap, hrefBase) {
   return `
     <div class="tile-row">
       ${tile("Health", esc(score), label(h.status))}
-      ${tile("Freshness", esc(pretty(f.freshness_status)), label(f.freshness_status), hrefBase ? hrefBase + "?tab=freshness" : "")}
-      ${tile("Pipeline", esc(pipe.label), esc(pipe.detail), hrefBase ? hrefBase + "?tab=pipeline" : "")}
+      ${tile("Pipeline", esc(pipe.label), label(f.freshness_status) + " " + esc(pipe.detail), hrefBase ? hrefBase + "?tab=pipeline" : "")}
       ${tile("Quality", esc(qual.label), esc(qual.detail), hrefBase ? hrefBase + "?tab=quality" : "")}
     </div>`;
 }
@@ -629,7 +654,7 @@ function renderList() {
         </div>
         <div class="card-hero">${donut(score / 100, fmtScore(h.total_checks ? h.health_score : null), pretty(h.status), tone)}</div>
         ${tilesHTML(s)}
-        <p class="card-foot">${esc((s.pipeline || []).length + " DAGs")} · freshness ${esc(pretty(f.freshness_status))}${f.current_delay_mins != null ? " · " + esc(fmtMins(f.current_delay_mins)) + " delay" : ""}</p>
+        <p class="card-foot">${esc((s.pipeline || []).length + " DAGs")} · SLA ${esc(pretty(f.freshness_status))}${f.current_delay_mins != null ? " · age " + esc(fmtSpan(f.current_delay_mins)) : ""}</p>
       </a>`;
   }).join("");
   const empty = all.length === 0
@@ -639,7 +664,7 @@ function renderList() {
     <div class="toolbar">
       <div>
         <h1>Data products</h1>
-        <p class="lede">Live health, freshness, and pipeline status from Airflow and warehouse quality checks.</p>
+        <p class="lede">Live health, pipeline SLA, and quality from Airflow and warehouse checks.</p>
       </div>
       <input class="search" id="filter" type="search" aria-label="Filter by name or team" placeholder="Filter by name or team" value="${esc(state.filter)}" />
     </div>
@@ -686,13 +711,12 @@ function renderDetail(route) {
   const p = snap.data_product;
   const tab = route.tab;
   const base = `#/data-product/${encodeURIComponent(route.id)}`;
-  const tabs = ["overview", "freshness", "pipeline", "quality"].map((t) => {
+  const tabs = ["overview", "pipeline", "quality"].map((t) => {
     const href = `${base}?tab=${t}`;
-    const title = t === "quality" ? "Quality signals" : pretty(t);
-    return `<button class="tab ${tab === t ? "active" : ""}" data-href="${href}">${title}</button>`;
+    return `<button class="tab ${tab === t ? "active" : ""}" data-href="${href}">${pretty(t)}</button>`;
   }).join("");
   let body = "";
-  if (tab === "pipeline" || tab === "freshness") {
+  if (tab === "pipeline") {
     const q = state.tableFilter.trim().toLowerCase();
     const all = sortDAGs(snap.pipeline);
     const failed = all.filter((d) => dagRunBucket(d) === "failed").length;
@@ -719,55 +743,18 @@ function renderDetail(route) {
         ["success", "Success", success],
       ], state.runFilter, "run") +
       chipGroup([
-        ["all", "Any freshness", all.length],
+        ["all", "Any SLA", all.length],
         ["at_risk", "At risk", atRisk],
         ["caution", "Caution", caution],
         ["trusted", "Trusted", trusted],
       ], state.freshnessFilter, "fresh")
     );
-    const cols = tab === "freshness" ? 10 : 8;
+    const cols = 9;
     const noDags = all.length === 0
-      ? emptyRow(cols, "No DAGs matched this product.", dagEmptyHint)
-      : emptyRow(cols, "No DAGs match these filters.", "Clear the run or freshness chips, or the search box.");
-    const f = snap.freshness || {};
-    if (tab === "freshness") {
-      body = `
-      <div class="tile-row" style="margin-bottom:16px">
-        ${tile("Status", esc(pretty(f.freshness_status)), label(f.freshness_status))}
-        ${tile("Data age", esc(fmtMins(f.current_delay_mins)), esc(f.status_reason || ""))}
-        ${tile("Last success", fmtWhen(f.last_successful_at), "primary DAG")}
-        ${tile("SLA", esc(fmtMins(f.sla_minutes)), "interval " + esc(fmtMins(f.expected_interval_mins)))}
-      </div>
-      ${dagFilterBar}
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>${sortBtn("dag", "DAG")}</th><th>Astro</th>
-            <th>${sortBtn("freshness", "Freshness")}</th><th>${sortBtn("overall", "Overall")}</th>
-            <th>${sortBtn("last", "Last success")}</th><th>${sortBtn("next", "Next expected")}</th>
-            <th>${sortBtn("age", "Age")}</th><th>${sortBtn("interval", "Interval")}</th>
-            <th>${sortBtn("slamins", "SLA")}</th><th>Flags</th>
-          </tr></thead>
-          <tbody>
-            ${rows.map((d) => `
-              <tr>
-                <td class="check-name">${dagNameCell(d)}</td>
-                <td class="astro-url">${astroLink(d)}</td>
-                <td>${label(d.dag_freshness_status)}</td>
-                <td>${label(d.dag_overall_status)}</td>
-                <td>${fmtWhen(d.last_successful_at)}</td>
-                <td>${fmtWhen(d.dag_next_expected_at)}</td>
-                <td>${esc(fmtMins(d.dag_data_age_mins))}</td>
-                <td>${esc(fmtMins(d.dag_expected_interval_mins))}</td>
-                <td>${esc(fmtMins(d.dag_sla_minutes))}</td>
-                <td>${[d.is_primary_dag ? "primary" : "", d.dag_is_paused ? "paused" : "", d.dag_is_custom ? "custom" : ""].filter(Boolean).join(" · ") || "—"}</td>
-              </tr>`).join("") || noDags}
-          </tbody>
-        </table>
-      </div>
-      <p class="sub">${all.length} DAG${all.length === 1 ? "" : "s"} · hover a time for the exact local timestamp, then open the DAG in Astro to compare last / next run. ${atRisk} at risk · ${caution} caution</p>`;
-    } else {
-      body = `
+      ? emptyRow(cols, "No active DAGs matched this product.", dagEmptyHint)
+      : emptyRow(cols, "No DAGs match these filters.", "Clear the run or SLA chips, or the search box.");
+    const customCount = all.filter((d) => d.dag_is_custom).length;
+    body = `
       <div class="chart-grid hero">
         ${segmentDonut([
           { value: ok, label: "Success", cls: "ok" },
@@ -775,7 +762,7 @@ function renderDetail(route) {
           { value: paused, label: "Paused", cls: "warn" },
           { value: failed, label: "Failed", cls: "bad" },
         ], `${ok}/${all.length || 0}`, "Run mix")}
-        ${donut(all.length ? atRisk / all.length : 0, String(atRisk), "Freshness risk", atRisk ? "bad" : "ok")}
+        ${donut(all.length ? atRisk / all.length : 0, String(atRisk), "SLA risk", atRisk ? "bad" : "ok")}
       </div>
       ${dagFilterBar}
       <div class="table-wrap">
@@ -789,14 +776,14 @@ function renderDetail(route) {
             <th>${sortBtn("next", "Next Run")}</th>
             <th>Timing</th>
             <th>${sortBtn("rel7", "Reliability")}</th>
+            <th>Astro</th>
           </tr></thead>
           <tbody>
             ${rows.map((d) => pipelineRows(d)).join("") || noDags}
           </tbody>
         </table>
       </div>
-      <p class="sub">${all.length} DAG${all.length === 1 ? "" : "s"} including paused/custom · live Airflow latest run, duration, and 7/30/90d success rate from recent dag runs. <strong>Open in Astro</strong> is on each row (new tab). Expand for run id and last success.</p>`;
-    }
+      <p class="sub">${all.length} active DAG${all.length === 1 ? "" : "s"}${customCount ? " · " + customCount + " custom (shown, excluded from scores)" : ""} · Status, SLA, last/next run, interval, and age on one table. <strong>Open in Astro</strong> is on each row.</p>`;
   } else if (tab === "quality") {
     const q = state.tableFilter.trim().toLowerCase();
     const src = state.sourceFilter;
@@ -887,7 +874,7 @@ function renderDetail(route) {
       ${tilesHTML(snap, base)}
       ${overviewCharts(snap)}
       <p class="msg ${cls}">${esc(h.status_message || f.status_reason || "No status message")}</p>
-      <p class="sub">Health Score v2 from live validation/Elementary + Astro freshness. Open the Freshness or Pipeline tab and click a DAG name to compare with Astro.</p>`;
+      <p class="sub">Health Score v2 from live validation/Elementary and Astro pipeline checks. Open Pipeline for Status, SLA, and Astro links.</p>`;
   }
   const updatedRel = parseDate(snap.updated_at) ? fmtRelative(snap.updated_at) : "—";
   return `

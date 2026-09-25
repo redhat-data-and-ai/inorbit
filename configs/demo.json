@@ -61,6 +61,24 @@
         "dag_reliability_90d": 90
       },
       {
+        "data_product_id": "alpha",
+        "dag_id": "alpha_adhoc_refresh",
+        "astro_deployment_name": "prod",
+        "astro_deployment_id": "prod",
+        "dag_status": "SUCCESS",
+        "external_run_id": "manual__demo_alpha_custom",
+        "completed_ago": "4h",
+        "dag_duration_seconds": 120,
+        "is_primary_dag": false,
+        "dag_is_paused": true,
+        "dag_is_custom": true,
+        "trigger_type": "manual",
+        "pipeline_type": "DAG",
+        "astro_url": "https://astro.example.com/prod/dags/alpha_adhoc_refresh",
+        "dag_runs_7d": 1,
+        "dag_reliability_7d": 100
+      },
+      {
         "data_product_id": "beta",
         "dag_id": "beta_daily",
         "astro_deployment_name": "prod",

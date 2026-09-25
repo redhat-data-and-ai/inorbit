@@ -13,11 +13,12 @@ func TestFrequencyDisplay(t *testing.T) {
 		mins float64
 		want string
 	}{
-		{15, "Every 15m"},
-		{60, "Every 1hr"},
-		{240, "Every 4hr"},
-		{1440, "Every 24hr"},
-		{2880, "Every 2d"},
+		{15, "Every 15 min"},
+		{60, "Every 1 hour"},
+		{90, "Every 1 hour 30 min"},
+		{240, "Every 4 hours"},
+		{1440, "Every 1 day"},
+		{2880, "Every 2 days"},
 	}
 	for _, tc := range cases {
 		m := tc.mins
@@ -66,12 +67,39 @@ func TestApplyReliabilityWindows(t *testing.T) {
 	}
 }
 
+func TestFormatMins(t *testing.T) {
+	if got := pipeline.FormatMins(45); got != "45 min" {
+		t.Fatalf("45: %q", got)
+	}
+	if got := pipeline.FormatMins(120); got != "2 hours" {
+		t.Fatalf("120: %q", got)
+	}
+	if got := pipeline.FormatMins(1500); got != "1 day 1 hour" {
+		t.Fatalf("1500: %q", got)
+	}
+}
+
+func TestApplySLADefaultsQuarterIntervalMin30(t *testing.T) {
+	m := 1440.0
+	d := domain.DAG{IntervalMins: &m}
+	pipeline.ApplySLADefaults(&d)
+	if d.SLAMinutes == nil || *d.SLAMinutes != 360 {
+		t.Fatalf("daily sla %+v", d.SLAMinutes)
+	}
+	hourly := 60.0
+	h := domain.DAG{IntervalMins: &hourly}
+	pipeline.ApplySLADefaults(&h)
+	if h.SLAMinutes == nil || *h.SLAMinutes != 30 {
+		t.Fatalf("hourly floor 30, got %+v", h.SLAMinutes)
+	}
+}
+
 func TestEnrichDAGFillsDisplay(t *testing.T) {
 	m := 1440.0
 	pct := 81.08
 	d := domain.DAG{IntervalMins: &m, RunID: "scheduled__orders", Reliability30d: &pct}
 	pipeline.EnrichDAG(&d)
-	if d.PipelineType != "DAG" || d.FrequencyDisplay != "Every 24hr" || d.TriggerType != "SCHEDULED" {
+	if d.PipelineType != "DAG" || d.FrequencyDisplay != "Every 1 day" || d.TriggerType != "SCHEDULED" {
 		t.Fatalf("%+v", d)
 	}
 	if d.ReliabilityStatus30d != "CAUTION" {

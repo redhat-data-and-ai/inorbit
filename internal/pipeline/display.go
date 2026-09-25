@@ -20,22 +20,57 @@ type RunFact struct {
 	Success bool
 }
 
-// FrequencyDisplay matches marts.pipeline_status.dag_frequency_display.
+// FormatMins turns a minute count into min / hours / days, skipping zero parts.
+func FormatMins(m float64) string {
+	mins := int(math.Round(m))
+	if mins < 0 {
+		mins = 0
+	}
+	days := mins / 1440
+	hours := (mins % 1440) / 60
+	rem := mins % 60
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", days, plural(days, "day", "days")))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", hours, plural(hours, "hour", "hours")))
+	}
+	if rem > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%d min", rem))
+	}
+	return strings.Join(parts, " ")
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// FrequencyDisplay is "Every {span}" from the expected interval.
 func FrequencyDisplay(intervalMins *float64) string {
 	if intervalMins == nil || *intervalMins <= 0 {
 		return ""
 	}
-	m := *intervalMins
-	switch {
-	case m < 60:
-		return fmt.Sprintf("Every %.0fm", math.Round(m))
-	case m < 1440:
-		return fmt.Sprintf("Every %.0fhr", math.Floor(m/60))
-	case m == 1440:
-		return "Every 24hr"
-	default:
-		return fmt.Sprintf("Every %.0fd", math.Floor(m/1440))
+	return "Every " + FormatMins(*intervalMins)
+}
+
+// ApplySLADefaults fills sla_minutes when the tag is missing: 25% of the
+// expected interval, minimum 30 minutes (same as inorbit-dbt).
+func ApplySLADefaults(d *domain.DAG) {
+	if d == nil {
+		return
 	}
+	if d.SLAMinutes != nil && *d.SLAMinutes > 0 {
+		return
+	}
+	if d.IntervalMins == nil || *d.IntervalMins <= 0 {
+		return
+	}
+	v := math.Max(math.Round(*d.IntervalMins*0.25), 30)
+	d.SLAMinutes = &v
 }
 
 // TriggerFromRunID maps Airflow dag_run_id / run_type to SCHEDULED, MANUAL, etc.
@@ -112,6 +147,7 @@ func packRel(n, ok int) (int, *float64, string) {
 
 // EnrichDAG fills display fields the UI expects (frequency, type, trigger, reliability bands).
 func EnrichDAG(d *domain.DAG) {
+	ApplySLADefaults(d)
 	if d.PipelineType == "" {
 		d.PipelineType = "DAG"
 	}
