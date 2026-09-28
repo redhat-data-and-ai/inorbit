@@ -13,6 +13,7 @@ import (
 	"github.com/inorbit/inorbit/internal/demo"
 	"github.com/inorbit/inorbit/internal/domain"
 	"github.com/inorbit/inorbit/internal/engine"
+	"github.com/inorbit/inorbit/internal/ingest/quality"
 	"github.com/inorbit/inorbit/internal/store"
 )
 
@@ -21,7 +22,7 @@ func setup(t *testing.T) (http.Handler, []domain.DataProduct, []domain.DAG) {
 	st := store.New()
 	eng := engine.New(st)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	products, dags, checks, err := demo.Load(now)
+	products, dags, checks, lineageRows, err := demo.Load(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,10 +34,16 @@ func setup(t *testing.T) (http.Handler, []domain.DataProduct, []domain.DAG) {
 	for _, c := range checks {
 		byC[c.DataProductID] = append(byC[c.DataProductID], c)
 	}
+	byL := map[string]domain.Lineage{}
+	for _, lin := range lineageRows {
+		byL[lin.DataProductID] = lin
+	}
 	for _, p := range products {
 		st.UpsertProduct(p)
 		st.SetDAGs(p.ID, byD[p.ID])
 		st.SetChecks(p.ID, byC[p.ID])
+		st.SetQualitySources(p.ID, quality.ConfigSources(p))
+		st.SetLineage(p.ID, byL[p.ID])
 	}
 	eng.Recompute(now)
 	return (&api.Server{Store: st, Alerts: alert.New(st, nil)}).Handler(), products, dags
@@ -150,5 +157,18 @@ func TestSnapshotsAndDemoFreshness(t *testing.T) {
 	}
 	if pipe[0].AstroURL != healthyDAG.AstroURL {
 		t.Fatalf("healthy astro_url %q want %q", pipe[0].AstroURL, healthyDAG.AstroURL)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/data-products/"+atRisk.ID+"/lineage", nil))
+	if rec.Code != 200 {
+		t.Fatalf("lineage %d %s", rec.Code, rec.Body.String())
+	}
+	var lin domain.Lineage
+	if err := json.Unmarshal(rec.Body.Bytes(), &lin); err != nil {
+		t.Fatal(err)
+	}
+	if lin.DataProductID != atRisk.ID || len(lin.UpstreamSources) < 1 {
+		t.Fatalf("demo lineage %+v", lin)
 	}
 }

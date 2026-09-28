@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inorbit/inorbit/internal/domain"
@@ -18,9 +20,13 @@ import (
 
 var identRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
+var quietDriverOnce sync.Once
+
 type Snowflake struct {
-	DB   *sql.DB
-	sess *sql.Conn
+	DB      *sql.DB
+	sess    *sql.Conn
+	mu      sync.Mutex
+	missing map[string]bool
 }
 
 type ConnConfig struct {
@@ -37,6 +43,7 @@ func OpenFromEnv() (*Snowflake, error) {
 }
 
 func Open(c ConnConfig) (*Snowflake, error) {
+	quietMissingObjectDriverLogs()
 	account := pick(c.Account, "SNOWFLAKE_ACCOUNT")
 	user := pick(c.User, "SNOWFLAKE_USER")
 	if account == "" || user == "" {
@@ -101,7 +108,7 @@ func Open(c ConnConfig) (*Snowflake, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Snowflake{DB: db, sess: sess}, nil
+	return &Snowflake{DB: db, sess: sess, missing: map[string]bool{}}, nil
 }
 
 func loadPEMFile(path string) (*rsa.PrivateKey, error) {
@@ -190,40 +197,51 @@ func (s *Snowflake) Close() error {
 }
 
 // LatestChecks loads the newest validation run and newest dbt/Elementary invocation per product.
-func (s *Snowflake) LatestChecks(ctx context.Context, products []domain.DataProduct) (checks []domain.Check, productIDs []string, err error) {
+// Missing warehouse objects are skipped, not treated as ingest errors.
+func (s *Snowflake) LatestChecks(ctx context.Context, products []domain.DataProduct) (checks []domain.Check, sources map[string]domain.QualitySources, err error) {
 	if s == nil || s.sess == nil {
 		return nil, nil, fmt.Errorf("snowflake client is nil")
 	}
+	sources = make(map[string]domain.QualitySources, len(products))
 	var errs []string
 	for _, p := range products {
-		got, perr := s.productChecks(ctx, p)
+		got, src, perr := s.productChecks(ctx, p)
+		sources[p.ID] = src
 		if perr != nil {
 			errs = append(errs, p.ID+": "+perr.Error())
-			if len(got) == 0 {
-				continue
-			}
 		}
-		productIDs = append(productIDs, p.ID)
 		checks = append(checks, got...)
 	}
-	if len(productIDs) == 0 && len(errs) > 0 {
-		return nil, nil, fmt.Errorf("quality ingest: %s", strings.Join(errs, "; "))
+	if len(errs) == len(products) && len(checks) == 0 && len(products) > 0 {
+		return checks, sources, fmt.Errorf("quality ingest: %s", strings.Join(errs, "; "))
 	}
 	if len(errs) > 0 {
-		return checks, productIDs, fmt.Errorf("quality ingest partial: %s", strings.Join(errs, "; "))
+		return checks, sources, fmt.Errorf("quality ingest partial: %s", strings.Join(errs, "; "))
 	}
-	return checks, productIDs, nil
+	return checks, sources, nil
 }
 
-func (s *Snowflake) productChecks(ctx context.Context, p domain.DataProduct) ([]domain.Check, error) {
+func disabledSource() domain.QualitySource {
+	return domain.QualitySource{Status: domain.QualityDisabled}
+}
+
+func (s *Snowflake) productChecks(ctx context.Context, p domain.DataProduct) ([]domain.Check, domain.QualitySources, error) {
 	var out []domain.Check
 	var errs []string
+	src := domain.QualitySources{
+		Validation: disabledSource(),
+		DBT:        disabledSource(),
+	}
 
 	if p.Validation.Enabled {
 		rel, err := qualified(p.Validation)
 		if err != nil {
 			errs = append(errs, "validation: "+err.Error())
+			src.Validation = domain.QualitySource{Status: domain.QualityMissing}
+		} else if s.knownMissing(rel) {
+			src.Validation = domain.QualitySource{Status: domain.QualityMissing, Relation: rel}
 		} else {
+			src.Validation = domain.QualitySource{Status: domain.QualityOK, Relation: rel}
 			vxSQL := `
 with latest as (
   select run_id
@@ -235,7 +253,10 @@ from ` + rel + ` vr
 inner join latest on latest.run_id = vr.run_id`
 			vx, err := s.query(ctx, vxSQL)
 			if err != nil {
-				if !isMissingObject(err) {
+				if isMissingObject(err) {
+					s.markMissing(rel)
+					src.Validation.Status = domain.QualityMissing
+				} else {
 					errs = append(errs, "validation: "+err.Error())
 				}
 			} else {
@@ -253,7 +274,11 @@ inner join latest on latest.run_id = vr.run_id`
 		rel, err := qualified(p.DBTLogs)
 		if err != nil {
 			errs = append(errs, "dbt: "+err.Error())
+			src.DBT = domain.QualitySource{Status: domain.QualityMissing}
+		} else if s.knownMissing(rel) {
+			src.DBT = domain.QualitySource{Status: domain.QualityMissing, Relation: rel}
 		} else {
+			src.DBT = domain.QualitySource{Status: domain.QualityOK, Relation: rel}
 			dbtSQL := `
 with staged as (
   select * from ` + rel + `
@@ -268,10 +293,16 @@ from staged s
 inner join latest l on coalesce(s.invocation_id, s.test_execution_id) = l.invocation_key`
 			dbt, err := s.query(ctx, dbtSQL)
 			if err != nil {
-				if !isMissingObject(err) {
+				if isMissingObject(err) {
+					s.markMissing(rel)
+					src.DBT.Status = domain.QualityMissing
+				} else {
 					fallback, ferr := s.query(ctx, "select * from "+rel+" limit 4000")
 					if ferr != nil {
-						if !isMissingObject(ferr) {
+						if isMissingObject(ferr) {
+							s.markMissing(rel)
+							src.DBT.Status = domain.QualityMissing
+						} else {
 							errs = append(errs, "dbt: "+err.Error())
 						}
 					} else {
@@ -296,12 +327,12 @@ inner join latest l on coalesce(s.invocation_id, s.test_execution_id) = l.invoca
 	}
 
 	if len(out) == 0 && len(errs) > 0 {
-		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
+		return nil, src, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	if len(errs) > 0 {
-		return out, fmt.Errorf("%s", strings.Join(errs, "; "))
+		return out, src, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
-	return out, nil
+	return out, src, nil
 }
 
 func stripSensitive(rec map[string]any) {
@@ -311,8 +342,60 @@ func stripSensitive(rec map[string]any) {
 }
 
 func isMissingObject(err error) bool {
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "does not exist") || strings.Contains(s, "object does not exist")
+	if err == nil {
+		return false
+	}
+	return isMissingObjectLog(err.Error())
+}
+
+func isMissingObjectLog(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "002003") ||
+		strings.Contains(s, "does not exist") ||
+		strings.Contains(s, "object does not exist")
+}
+
+func (s *Snowflake) knownMissing(rel string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.missing[rel]
+}
+
+func (s *Snowflake) markMissing(rel string) {
+	if s == nil || rel == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.missing == nil {
+		s.missing = map[string]bool{}
+	}
+	s.missing[rel] = true
+}
+
+// quietMissingObjectDriverLogs drops gosnowflake ERRO lines for 002003 (schema/table
+// missing). InOrbit already treats those as skipped sources; the driver logs first.
+func quietMissingObjectDriverLogs() {
+	quietDriverOnce.Do(func() {
+		sf.GetLogger().SetOutput(missingObjectLogWriter{w: os.Stderr})
+	})
+}
+
+type missingObjectLogWriter struct {
+	w io.Writer
+}
+
+func (m missingObjectLogWriter) Write(p []byte) (int, error) {
+	if isMissingObjectLog(string(p)) {
+		return len(p), nil
+	}
+	if m.w == nil {
+		return os.Stderr.Write(p)
+	}
+	return m.w.Write(p)
 }
 
 func (s *Snowflake) query(ctx context.Context, q string) ([]map[string]any, error) {

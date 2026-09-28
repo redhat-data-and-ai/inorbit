@@ -15,6 +15,10 @@ const (
 	DefaultValidationTable  = "VALIDATION_RESULT"
 	DefaultDBTSchema        = "DBTLOGS"
 	DefaultDBTTable         = "ELEMENTARY_TEST_RESULTS"
+	DefaultLineageDatabase  = "INORBIT_DB"
+	DefaultLineageSchema    = "MARTS"
+	DefaultLineageTable     = "DP_LINEAGE"
+	DefaultPipelineTable    = "PIPELINE_STATUS"
 )
 
 // File is the on-disk live/demo JSON config. ${ENV} values are expanded.
@@ -22,8 +26,18 @@ const (
 type File struct {
 	Astro        AstroConfig     `json:"astro"`
 	Snowflake    SnowflakeConfig `json:"snowflake"`
+	Lineage      LineageConfig   `json:"lineage"`
+	Pipeline     LineageConfig   `json:"pipeline"`
 	DataProducts []ProductConfig `json:"data_products"`
 	Demo         DemoSnapshot    `json:"demo"`
+}
+
+// LineageConfig points at the warehouse lineage mart (not a live Airflow poll).
+type LineageConfig struct {
+	Enabled  *bool  `json:"enabled"`
+	Database string `json:"database"`
+	Schema   string `json:"schema"`
+	Table    string `json:"table"`
 }
 
 // SnowflakeConfig is the shared warehouse connection. Account/role/warehouse
@@ -64,8 +78,29 @@ type ProductConfig struct {
 // DemoSnapshot is in-memory sample pipeline/quality state for -mode=demo.
 // Times are durations before "now" (Go ParseDuration), e.g. "95m", "2h".
 type DemoSnapshot struct {
-	DAGs   []DemoDAG   `json:"dags"`
-	Checks []DemoCheck `json:"checks"`
+	DAGs    []DemoDAG     `json:"dags"`
+	Checks  []DemoCheck   `json:"checks"`
+	Lineage []DemoLineage `json:"lineage"`
+}
+
+type DemoLineage struct {
+	DataProductID         string            `json:"data_product_id"`
+	Status                string            `json:"status"`
+	HealthScore           *float64          `json:"health_score"`
+	UpstreamSources       []DemoLineageNode `json:"upstream_sources"`
+	DownstreamConsumers   []DemoLineageNode `json:"downstream_consumers"`
+	BlastRadiusCount      int               `json:"blast_radius_count"`
+	BlastRadiusScore      string            `json:"blast_radius_score"`
+	ServiceAccountCount   int               `json:"service_account_count"`
+	ConsumerGroupCount    int               `json:"consumer_group_count"`
+	DirectDPConsumerCount int               `json:"direct_dp_consumer_count"`
+}
+
+type DemoLineageNode struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Status      string   `json:"status"`
+	HealthScore *float64 `json:"health_score"`
 }
 
 type DemoDAG struct {
@@ -272,6 +307,47 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// LineageTable is the warehouse mart used for the Lineage tab (not live).
+func (c File) LineageTable() domain.QualityTable {
+	enabled := true
+	if c.Lineage.Enabled != nil {
+		enabled = *c.Lineage.Enabled
+	}
+	db := firstNonEmpty(c.Lineage.Database, DefaultLineageDatabase)
+	schema := firstNonEmpty(c.Lineage.Schema, DefaultLineageSchema)
+	table := firstNonEmpty(c.Lineage.Table, DefaultLineageTable)
+	if db == "" {
+		enabled = false
+	}
+	return domain.QualityTable{
+		Enabled:  enabled,
+		Database: db,
+		Schema:   schema,
+		Table:    table,
+	}
+}
+
+// PipelineTable is the warehouse mart used to fill Pipeline when a product's
+// DAGs are not on a listed Airflow deployment.
+func (c File) PipelineTable() domain.QualityTable {
+	enabled := true
+	if c.Pipeline.Enabled != nil {
+		enabled = *c.Pipeline.Enabled
+	}
+	db := firstNonEmpty(c.Pipeline.Database, c.Lineage.Database, DefaultLineageDatabase)
+	schema := firstNonEmpty(c.Pipeline.Schema, c.Lineage.Schema, DefaultLineageSchema)
+	table := firstNonEmpty(c.Pipeline.Table, DefaultPipelineTable)
+	if db == "" {
+		enabled = false
+	}
+	return domain.QualityTable{
+		Enabled:  enabled,
+		Database: db,
+		Schema:   schema,
+		Table:    table,
+	}
 }
 
 // SnowflakeConn merges live.json with env. Config wins when set so the common

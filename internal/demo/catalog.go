@@ -49,23 +49,23 @@ func catalogCandidates() []string {
 }
 
 // Load reads configs/demo.json (or INORBIT_CONFIG) relative to now.
-func Load(now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, error) {
+func Load(now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, []domain.Lineage, error) {
 	path, err := Resolve("")
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	return LoadFile(path, now)
 }
 
 // LoadFile materializes the demo snapshot from a config file.
-func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, error) {
+func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, []domain.Lineage, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	products := cfg.Products()
 	if len(products) == 0 {
-		return nil, nil, nil, fmt.Errorf("%s: no data_products", path)
+		return nil, nil, nil, nil, fmt.Errorf("%s: no data_products", path)
 	}
 	byID := map[string]domain.DataProduct{}
 	for _, p := range products {
@@ -76,7 +76,7 @@ func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, [
 	for i, raw := range cfg.Demo.DAGs {
 		d, err := materializeDAG(raw, byID, now)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("%s: demo.dags[%d]: %w", path, i, err)
+			return nil, nil, nil, nil, fmt.Errorf("%s: demo.dags[%d]: %w", path, i, err)
 		}
 		dags = append(dags, d)
 	}
@@ -84,11 +84,19 @@ func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, [
 	for i, raw := range cfg.Demo.Checks {
 		c, err := materializeCheck(raw, byID, now)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("%s: demo.checks[%d]: %w", path, i, err)
+			return nil, nil, nil, nil, fmt.Errorf("%s: demo.checks[%d]: %w", path, i, err)
 		}
 		checks = append(checks, c)
 	}
-	return products, dags, checks, nil
+	lineage := make([]domain.Lineage, 0, len(products))
+	byLin := map[string]config.DemoLineage{}
+	for _, raw := range cfg.Demo.Lineage {
+		byLin[strings.ToLower(strings.TrimSpace(raw.DataProductID))] = raw
+	}
+	for _, p := range products {
+		lineage = append(lineage, materializeLineage(byLin[p.ID], p, now))
+	}
+	return products, dags, checks, lineage, nil
 }
 
 func materializeDAG(raw config.DemoDAG, products map[string]domain.DataProduct, now time.Time) (domain.DAG, error) {
@@ -181,6 +189,41 @@ func materializeCheck(raw config.DemoCheck, products map[string]domain.DataProdu
 		c.ExecutedAt = *executed
 	}
 	return c, nil
+}
+
+func materializeLineage(raw config.DemoLineage, p domain.DataProduct, now time.Time) domain.Lineage {
+	up := make([]domain.LineageNode, 0, len(raw.UpstreamSources))
+	for _, n := range raw.UpstreamSources {
+		up = append(up, domain.LineageNode{Name: n.Name, Type: n.Type, Status: n.Status, HealthScore: n.HealthScore})
+	}
+	down := make([]domain.LineageNode, 0, len(raw.DownstreamConsumers))
+	for _, n := range raw.DownstreamConsumers {
+		down = append(down, domain.LineageNode{Name: n.Name, Type: n.Type, Status: n.Status, HealthScore: n.HealthScore})
+	}
+	dpCount := raw.DirectDPConsumerCount
+	if dpCount == 0 {
+		for _, n := range down {
+			if n.Type == "" || strings.EqualFold(n.Type, "data_product") {
+				dpCount++
+			}
+		}
+	}
+	return domain.Lineage{
+		DataProductID:         p.ID,
+		DataProductName:       p.Name,
+		Status:                raw.Status,
+		HealthScore:           raw.HealthScore,
+		UpstreamSources:       up,
+		UpstreamCount:         len(up),
+		DownstreamConsumers:   down,
+		DirectDownstreamCount: len(down),
+		DirectDPConsumerCount: dpCount,
+		ServiceAccountCount:   raw.ServiceAccountCount,
+		ConsumerGroupCount:    raw.ConsumerGroupCount,
+		BlastRadiusCount:      raw.BlastRadiusCount,
+		BlastRadiusScore:      raw.BlastRadiusScore,
+		ComputedAt:            now,
+	}
 }
 
 func parseAgo(now time.Time, spec string) (*time.Time, error) {

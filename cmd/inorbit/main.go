@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/inorbit/inorbit/internal/domain"
 	"github.com/inorbit/inorbit/internal/engine"
 	"github.com/inorbit/inorbit/internal/ingest/astro"
+	"github.com/inorbit/inorbit/internal/ingest/lineage"
 	"github.com/inorbit/inorbit/internal/ingest/quality"
 	"github.com/inorbit/inorbit/internal/store"
 	"github.com/inorbit/inorbit/internal/web"
@@ -31,10 +34,13 @@ type intervals struct {
 }
 
 type liveAirflow struct {
-	client   *astro.Client
-	quality  *quality.Snowflake
-	products []domain.DataProduct
-	extra    map[string]string
+	client    *astro.Client
+	quality   *quality.Snowflake
+	lineage   domain.QualityTable
+	pipeline  domain.QualityTable
+	products  []domain.DataProduct
+	extra     map[string]string
+	airflowMu sync.Mutex
 }
 
 func main() {
@@ -49,6 +55,7 @@ func main() {
 	flag.Parse()
 
 	lg := log.New(os.Stdout, "inorbit ", log.LstdFlags)
+	boot := time.Now()
 	st := store.New()
 	st.SetMeta(func(m *domain.PollMeta) {
 		m.Mode = *mode
@@ -70,22 +77,8 @@ func main() {
 		lg.Printf("demo catalog loaded: %d product(s) [%s]", len(ids), strings.Join(ids, ", "))
 	} else {
 		live = mustLive(lg, st, *configPath)
-		now = time.Now().UTC()
-		n, err := pollAirflow(ctx, lg, st, eng, live, now)
-		if err != nil {
-			lg.Printf("startup airflow ingest failed: %v", err)
-		} else {
-			lg.Printf("startup airflow ingest: %d dag(s)", n)
-		}
-		if qn, qerr := pollQuality(ctx, lg, st, eng, live, now); qerr != nil {
-			lg.Printf("startup quality ingest: %v", qerr)
-		} else if live != nil && live.quality != nil {
-			lg.Printf("startup quality ingest: %d check(s)", qn)
-		}
-		sc := st.Meta().Scale
-		lg.Printf("scale: %d product(s) snapshot JSON %dB → %d products ~%dB JSON / ~%dB RSS",
-			sc.CurrentDataProducts, sc.SnapshotJSONBytes, sc.TargetDataProducts,
-			sc.EstimatedSnapshotJSONBytesAtTarget, sc.EstimatedRSSBytesAtTarget)
+		eng.Recompute(now)
+		lg.Printf("live catalog loaded: %d product(s); HTTP listen starts before Airflow/quality ingest", len(live.products))
 	}
 
 	srv := &api.Server{Store: st, Alerts: alerts}
@@ -107,6 +100,10 @@ func main() {
 			lg.Fatal(err)
 		}
 	}()
+
+	if live != nil {
+		go runLiveStartup(ctx, lg, st, eng, live, boot)
+	}
 
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -185,20 +182,76 @@ func mustLive(lg *log.Logger, st *store.Memory, configPath string) *liveAirflow 
 	return &liveAirflow{
 		client:   &astro.Client{Token: token, Deployments: deps, Log: lg},
 		quality:  sf,
+		lineage:  cfg.LineageTable(),
+		pipeline: cfg.PipelineTable(),
 		products: products,
 		extra:    cfg.DAGMap(),
 	}
+}
+
+func logMem(lg *log.Logger, label string) {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	lg.Printf("memory %s heap_alloc=%dKiB heap_sys=%dKiB sys=%dKiB num_gc=%d goroutines=%d",
+		label, ms.HeapAlloc/1024, ms.HeapSys/1024, ms.Sys/1024, ms.NumGC, runtime.NumGoroutine())
+}
+
+func runLiveStartup(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, boot time.Time) {
+	now := time.Now().UTC()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		phase := time.Now()
+		n, err := pollAirflow(ctx, lg, st, eng, live, now)
+		if err != nil {
+			lg.Printf("startup airflow ingest failed: %v (took %s)", err, time.Since(phase).Round(time.Millisecond))
+			return
+		}
+		lg.Printf("startup airflow ingest: %d dag(s) took=%s", n, time.Since(phase).Round(time.Millisecond))
+	}()
+	go func() {
+		defer wg.Done()
+		phase := time.Now()
+		if qn, qerr := pollQuality(ctx, lg, st, eng, live, now); qerr != nil {
+			lg.Printf("startup quality ingest: %v (took %s)", qerr, time.Since(phase).Round(time.Millisecond))
+		} else if live.quality != nil {
+			lg.Printf("startup quality ingest: %d check(s) took=%s", qn, time.Since(phase).Round(time.Millisecond))
+		}
+		phase = time.Now()
+		if ln, lerr := pollLineage(ctx, lg, st, eng, live, now); lerr != nil {
+			lg.Printf("startup lineage ingest: %v (took %s)", lerr, time.Since(phase).Round(time.Millisecond))
+		} else if live.lineage.Enabled {
+			lg.Printf("startup lineage ingest: %d product(s) from warehouse mart took=%s", ln, time.Since(phase).Round(time.Millisecond))
+		}
+		phase = time.Now()
+		if pn, perr := pollPipelineMart(ctx, lg, st, eng, live, now); perr != nil {
+			lg.Printf("startup pipeline mart ingest: %v (took %s)", perr, time.Since(phase).Round(time.Millisecond))
+		} else if live.quality != nil && live.pipeline.Enabled {
+			lg.Printf("startup pipeline mart ingest: %d dag(s) took=%s", pn, time.Since(phase).Round(time.Millisecond))
+		}
+	}()
+	wg.Wait()
+	sc := st.Meta().Scale
+	lg.Printf("scale: %d product(s) snapshot JSON %dB → %d products ~%dB JSON / ~%dB RSS",
+		sc.CurrentDataProducts, sc.SnapshotJSONBytes, sc.TargetDataProducts,
+		sc.EstimatedSnapshotJSONBytesAtTarget, sc.EstimatedRSSBytesAtTarget)
+	logMem(lg, "startup")
+	lg.Printf("startup ingest done in %s", time.Since(boot).Round(time.Millisecond))
 }
 
 func pollAirflow(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) (int, error) {
 	if live == nil || live.client == nil {
 		return 0, nil
 	}
+	live.airflowMu.Lock()
+	defer live.airflowMu.Unlock()
 	dags, err := live.client.FetchForProducts(ctx, live.products, live.extra)
 	if err != nil {
 		return 0, err
 	}
-	astro.Apply(st, eng, dags, now)
+	st.SetLivePipeline(dags)
+	astro.Apply(st, eng, astro.MergeLiveAndMart(st.LivePipeline(), st.MartPipeline()), now)
 	st.TouchAstroRuns(time.Now().UTC())
 	n := 0
 	for _, p := range live.products {
@@ -213,19 +266,59 @@ func pollQuality(ctx context.Context, lg *log.Logger, st *store.Memory, eng *eng
 	if live == nil || live.quality == nil {
 		return 0, nil
 	}
-	checks, ids, err := live.quality.LatestChecks(ctx, live.products)
-	if len(ids) > 0 {
-		quality.Apply(st, eng, checks, ids, now)
+	checks, sources, err := live.quality.LatestChecks(ctx, live.products)
+	if len(sources) > 0 || len(checks) > 0 {
+		quality.Apply(st, eng, checks, sources, now)
 		st.TouchQuality(time.Now().UTC())
 		by := map[string]int{}
 		for _, c := range checks {
 			by[c.DataProductID]++
 		}
-		for _, id := range ids {
-			lg.Printf("quality ingest %s: %d check(s)", id, by[id])
+		for id, src := range sources {
+			lg.Printf("quality ingest %s: %d check(s) validation=%s dbt=%s", id, by[id], src.Validation.Status, src.DBT.Status)
 		}
 	}
 	return len(checks), err
+}
+
+func pollLineage(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) (int, error) {
+	if live == nil || live.quality == nil || !live.lineage.Enabled {
+		return 0, nil
+	}
+	rows, err := live.quality.LineageRows(ctx, live.lineage)
+	if err != nil {
+		return 0, err
+	}
+	mapped := lineage.Map(rows, live.products)
+	lineage.Apply(st, eng, mapped, now)
+	st.TouchLineage(time.Now().UTC())
+	n := 0
+	for _, lin := range mapped {
+		if lin.UpstreamCount+lin.DirectDownstreamCount > 0 {
+			n++
+		}
+	}
+	lg.Printf("lineage ingest %s: %d of %d product(s) have edges (warehouse mart, not live)", describeTable(live.lineage), n, len(mapped))
+	return len(mapped), nil
+}
+
+func pollPipelineMart(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) (int, error) {
+	if live == nil || live.quality == nil || !live.pipeline.Enabled {
+		return 0, nil
+	}
+	rows, err := live.quality.PipelineRows(ctx, live.pipeline)
+	if err != nil {
+		return 0, err
+	}
+	mapped := astro.MapMart(rows, live.products)
+	st.SetMartPipeline(mapped)
+	astro.Apply(st, eng, astro.MergeLiveAndMart(st.LivePipeline(), st.MartPipeline()), now)
+	nProd := map[string]struct{}{}
+	for _, d := range mapped {
+		nProd[d.DataProductID] = struct{}{}
+	}
+	lg.Printf("pipeline mart ingest %s: %d dag(s) for %d catalog product(s); live Airflow rows win on the same dag_id", describeTable(live.pipeline), len(mapped), len(nProd))
+	return len(mapped), nil
 }
 
 func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Time, configPath string) []string {
@@ -233,7 +326,7 @@ func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Tim
 	if err != nil {
 		lg.Fatalf("%v", err)
 	}
-	products, dags, checks, err := demo.LoadFile(path, now)
+	products, dags, checks, lineageRows, err := demo.LoadFile(path, now)
 	if err != nil {
 		lg.Fatalf("demo catalog %s: %v", path, err)
 	}
@@ -245,16 +338,23 @@ func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Tim
 	for _, c := range checks {
 		byC[c.DataProductID] = append(byC[c.DataProductID], c)
 	}
+	byL := map[string]domain.Lineage{}
+	for _, lin := range lineageRows {
+		byL[lin.DataProductID] = lin
+	}
 	ids := make([]string, 0, len(products))
 	for _, p := range products {
 		st.UpsertProduct(p)
 		st.SetDAGs(p.ID, byDP[p.ID])
 		st.SetChecks(p.ID, byC[p.ID])
+		st.SetQualitySources(p.ID, quality.ConfigSources(p))
+		st.SetLineage(p.ID, byL[p.ID])
 		ids = append(ids, p.ID)
 	}
 	eng.Recompute(now)
 	st.TouchAstroRuns(now)
 	st.TouchQuality(now)
+	st.TouchLineage(now)
 	lg.Printf("demo catalog %s", path)
 	return ids
 }
@@ -300,11 +400,18 @@ func runWorkers(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engi
 		case t := <-qualityTick.C:
 			if mode == "demo" {
 				st.TouchQuality(t)
-				lg.Printf("quality poll (demo): validation/dbt rows already in the catalog")
+				st.TouchLineage(t)
+				lg.Printf("quality poll (demo): validation/dbt/lineage/pipeline-mart rows already in the catalog")
 				continue
 			}
 			if _, err := pollQuality(ctx, lg, st, eng, live, t); err != nil {
 				lg.Printf("quality poll (live): %v", err)
+			}
+			if _, err := pollLineage(ctx, lg, st, eng, live, t); err != nil {
+				lg.Printf("lineage poll (live): %v", err)
+			}
+			if _, err := pollPipelineMart(ctx, lg, st, eng, live, t); err != nil {
+				lg.Printf("pipeline mart poll (live): %v", err)
 			}
 		}
 	}

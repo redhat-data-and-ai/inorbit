@@ -12,6 +12,7 @@ import (
 	"github.com/inorbit/inorbit/internal/demo"
 	"github.com/inorbit/inorbit/internal/domain"
 	"github.com/inorbit/inorbit/internal/engine"
+	"github.com/inorbit/inorbit/internal/ingest/quality"
 	"github.com/inorbit/inorbit/internal/store"
 	"github.com/inorbit/inorbit/internal/web"
 )
@@ -21,7 +22,7 @@ func handler(t *testing.T) http.Handler {
 	st := store.New()
 	eng := engine.New(st)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	products, dags, checks, err := demo.Load(now)
+	products, dags, checks, lineageRows, err := demo.Load(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,10 +34,16 @@ func handler(t *testing.T) http.Handler {
 	for _, c := range checks {
 		byC[c.DataProductID] = append(byC[c.DataProductID], c)
 	}
+	byL := map[string]domain.Lineage{}
+	for _, lin := range lineageRows {
+		byL[lin.DataProductID] = lin
+	}
 	for _, p := range products {
 		st.UpsertProduct(p)
 		st.SetDAGs(p.ID, byD[p.ID])
 		st.SetChecks(p.ID, byC[p.ID])
+		st.SetQualitySources(p.ID, quality.ConfigSources(p))
+		st.SetLineage(p.ID, byL[p.ID])
 	}
 	eng.Recompute(now)
 	return web.Mount((&api.Server{Store: st, Alerts: alert.New(st, nil)}).Handler())
@@ -71,6 +78,9 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "?tab=pipeline") || !strings.Contains(rec.Body.String(), "Elementary") {
 		t.Fatal("ui js missing pipeline tab or Elementary filter")
 	}
+	if !strings.Contains(rec.Body.String(), "?tab=lineage") || !strings.Contains(rec.Body.String(), "Upstream sources") {
+		t.Fatal("ui js missing lineage tab")
+	}
 	if !strings.Contains(rec.Body.String(), "timeZoneName") || !strings.Contains(rec.Body.String(), "fetch-banner") {
 		t.Fatal("ui js missing local timezone fetch banner")
 	}
@@ -82,6 +92,12 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "alert-banner") || !strings.Contains(rec.Body.String(), "warnings") {
 		t.Fatal("ui js missing ingest warning banner")
+	}
+	if !strings.Contains(rec.Body.String(), "Validation checks not exist") {
+		t.Fatal("ui js missing missing-validation empty state")
+	}
+	if !strings.Contains(rec.Body.String(), "warehouse pipeline mart") {
+		t.Fatal("ui js missing pipeline mart empty hint")
 	}
 
 	rec = httptest.NewRecorder()

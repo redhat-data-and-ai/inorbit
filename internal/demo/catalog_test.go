@@ -10,7 +10,7 @@ import (
 
 func TestLoadReadsCatalogJSON(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	products, dags, checks, err := demo.Load(now)
+	products, dags, checks, lineageRows, err := demo.Load(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,5 +50,17 @@ func TestLoadReadsCatalogJSON(t *testing.T) {
 	}
 	if primary.AstroURL == "" {
 		t.Fatal("demo DAG missing astro_url")
+	}
+	if len(lineageRows) != len(products) {
+		t.Fatalf("lineage %d products %d", len(lineageRows), len(products))
+	}
+	var sawUp bool
+	for _, lin := range lineageRows {
+		if lin.DataProductID == "alpha" && len(lin.UpstreamSources) >= 2 {
+			sawUp = true
+		}
+	}
+	if !sawUp {
+		t.Fatalf("demo alpha should have upstream sources: %+v", lineageRows)
 	}
 }

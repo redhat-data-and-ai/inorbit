@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,3 +194,78 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 		t.Fatalf("ordersmaster snapshot ok=%v pipe=%d", ok, len(snap.Pipeline))
 	}
 }
+
+func TestFetchForProductsParallelDeployments(t *testing.T) {
+	var inFlight, maxFlight atomic.Int32
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		n := inFlight.Add(1)
+		for {
+			old := maxFlight.Load()
+			if n <= old || maxFlight.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		time.Sleep(80 * time.Millisecond)
+		inFlight.Add(-1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_entries": 0, "dags": []any{}})
+	}
+	a := httptest.NewServer(http.HandlerFunc(handler))
+	b := httptest.NewServer(http.HandlerFunc(handler))
+	t.Cleanup(a.Close)
+	t.Cleanup(b.Close)
+
+	client := &astro.Client{
+		HTTP: http.DefaultClient,
+		Deployments: []astro.Deployment{
+			{Name: "prod", ID: "prod", AirflowAPIURL: a.URL},
+			{Name: "stage", ID: "stage", AirflowAPIURL: b.URL},
+		},
+	}
+	start := time.Now()
+	if _, err := client.FetchForProducts(context.Background(), []domain.DataProduct{{ID: "catalog", Name: "catalog"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if maxFlight.Load() < 2 {
+		t.Fatalf("expected overlapping deployment fetches, max in-flight %d", maxFlight.Load())
+	}
+	if time.Since(start) > 400*time.Millisecond {
+		t.Fatalf("parallel fetch still looked serial: %s", time.Since(start))
+	}
+}
+
+func TestFetchForProductsDagRunTimeout(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dags", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_entries": 1,
+			"dags": []map[string]any{{
+				"dag_id": "catalog_hourly", "is_paused": false,
+				"tags":        []map[string]any{{"name": "catalog"}, {"name": "is_primary_dag"}},
+				"next_dagrun": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			}},
+		})
+	})
+	mux.HandleFunc("/dags/catalog_hourly/dagRuns", func(http.ResponseWriter, *http.Request) {
+		time.Sleep(2 * time.Second)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := &astro.Client{
+		HTTP:          srv.Client(),
+		DAGRunTimeout: 80 * time.Millisecond,
+		Deployments:   []astro.Deployment{{Name: "prod", ID: "prod", AirflowAPIURL: srv.URL}},
+	}
+	start := time.Now()
+	dags, err := client.FetchForProducts(context.Background(), []domain.DataProduct{{ID: "catalog", Name: "catalog"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("hung dagRuns should time out quickly, took %s", time.Since(start))
+	}
+	if len(dags) != 1 || dags[0].DAGID != "catalog_hourly" {
+		t.Fatalf("want catalog_hourly kept after run timeout, got %+v", dags)
+	}
+}
+

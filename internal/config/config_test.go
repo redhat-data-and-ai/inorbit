@@ -105,6 +105,35 @@ func TestDeploymentsFromOrgURLAndID(t *testing.T) {
 	}
 }
 
+func TestDeploymentsSkipEmptyIDs(t *testing.T) {
+	t.Setenv("ASTRO_TOKEN", "tok")
+	t.Setenv("ASTRO_ORG_URL", "https://org.example.com")
+	t.Setenv("INORBIT_ASTRO_DEPLOYMENT_ID", "dep123")
+	t.Setenv("INORBIT_ASTRO_EXTRA_PROD_DEPLOYMENT_ID", "")
+	path := filepath.Join(t.TempDir(), "live.json")
+	body := `{
+  "astro": {
+    "org_url": "${ASTRO_ORG_URL}",
+    "deployments": [
+      {"name": "prod", "id": "${INORBIT_ASTRO_DEPLOYMENT_ID}"},
+      {"name": "extra-prod", "id": "${INORBIT_ASTRO_EXTRA_PROD_DEPLOYMENT_ID}"}
+    ]
+  },
+  "data_products": [{"id": "alpha"}]
+}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := cfg.Deployments()
+	if len(deps) != 1 || deps[0].Name != "prod" {
+		t.Fatalf("empty extra id must be skipped, got %+v", deps)
+	}
+}
+
 func TestTokenFallsBackToASTROAPIToken(t *testing.T) {
 	t.Setenv("ASTRO_TOKEN", "")
 	t.Setenv("ASTRO_API_TOKEN", "legacy")
@@ -178,5 +207,24 @@ func TestQualityTablesAreConfigDriven(t *testing.T) {
 	sc := cfg.SnowflakeConn()
 	if sc.Account != "acct" || sc.Role != "reader" || sc.Warehouse != "xs_wh" || sc.User != "tester" {
 		t.Fatalf("snowflake conn %+v", sc)
+	}
+}
+
+func TestLineageTableDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "live.json")
+	if err := os.WriteFile(path, []byte(`{"data_products":[{"id":"alpha"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lin := cfg.LineageTable()
+	if !lin.Enabled || lin.Database != "INORBIT_DB" || lin.Schema != "MARTS" || lin.Table != "DP_LINEAGE" {
+		t.Fatalf("lineage %+v", lin)
+	}
+	pipe := cfg.PipelineTable()
+	if !pipe.Enabled || pipe.Database != "INORBIT_DB" || pipe.Schema != "MARTS" || pipe.Table != "PIPELINE_STATUS" {
+		t.Fatalf("pipeline %+v", pipe)
 	}
 }

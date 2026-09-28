@@ -26,6 +26,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/data-products/{id}/pipeline", s.pipeline)
 	mux.HandleFunc("GET /v1/data-products/{id}/freshness", s.freshness)
 	mux.HandleFunc("GET /v1/data-products/{id}/quality", s.quality)
+	mux.HandleFunc("GET /v1/data-products/{id}/lineage", s.lineage)
 	mux.HandleFunc("GET /v1/data-products/{id}/health-trend", s.healthTrend)
 	mux.HandleFunc("GET /v1/subscriptions", s.listSubs)
 	mux.HandleFunc("POST /v1/subscriptions", s.createSub)
@@ -121,6 +122,14 @@ func (s *Server) quality(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, qualitySignals(snap.Quality))
+}
+
+func (s *Server) lineage(w http.ResponseWriter, r *http.Request) {
+	snap, ok := s.snap(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, snap.Lineage)
 }
 
 func (s *Server) listSubs(w http.ResponseWriter, _ *http.Request) {

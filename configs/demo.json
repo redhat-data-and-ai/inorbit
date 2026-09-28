@@ -148,6 +148,39 @@
         "source_type": "VALIDATION",
         "executed_ago": "40m"
       }
+    ],
+    "lineage": [
+      {
+        "data_product_id": "alpha",
+        "status": "AT_RISK",
+        "health_score": 54,
+        "blast_radius_count": 6,
+        "blast_radius_score": "HIGH IMPACT",
+        "service_account_count": 1,
+        "consumer_group_count": 1,
+        "direct_dp_consumer_count": 1,
+        "upstream_sources": [
+          {"name": "beta", "type": "data_product", "status": "TRUSTED", "health_score": 91},
+          {"name": "FIVETRAN_DB.ORDERS", "type": "fivetran_db", "status": "UNKNOWN"}
+        ],
+        "downstream_consumers": [
+          {"name": "finance_reports", "type": "data_product", "status": "CAUTION", "health_score": 72},
+          {"name": "alpha-app-sa", "type": "service_account", "status": "N/A"},
+          {"name": "Executive Dashboard", "type": "consumer_group", "status": "N/A"}
+        ]
+      },
+      {
+        "data_product_id": "beta",
+        "status": "TRUSTED",
+        "health_score": 91,
+        "blast_radius_count": 2,
+        "upstream_sources": [
+          {"name": "SNOWPIPE_DB.RAW", "type": "snowpipe_db", "status": "UNKNOWN"}
+        ],
+        "downstream_consumers": [
+          {"name": "alpha", "type": "data_product", "status": "AT_RISK", "health_score": 54}
+        ]
+      }
     ]
   }
 }

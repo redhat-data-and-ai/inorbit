@@ -59,14 +59,25 @@ func (e *Engine) Recompute(now time.Time) {
 		health := score.Evaluate([]domain.DataProduct{dp}, checks, e.Score)[0]
 		health.EvaluatedAt = now
 		fresh := pipeline.RollupFreshness(dp, dags, now)
+		lin := e.Store.Lineage(dp.ID)
+		lin.DataProductID = dp.ID
+		lin.DataProductName = dp.Name
+		if lin.UpstreamSources == nil {
+			lin.UpstreamSources = []domain.LineageNode{}
+		}
+		if lin.DownstreamConsumers == nil {
+			lin.DownstreamConsumers = []domain.LineageNode{}
+		}
 
 		e.Store.PutSnapshot(domain.Snapshot{
-			DataProduct: dp,
-			Health:      health,
-			Freshness:   fresh,
-			Pipeline:    pipe,
-			Quality:     checks,
-			UpdatedAt:   now,
+			DataProduct:    dp,
+			Health:         health,
+			Freshness:      fresh,
+			Pipeline:       pipe,
+			Quality:        checks,
+			QualitySources: e.Store.QualitySources(dp.ID),
+			Lineage:        lin,
+			UpdatedAt:      now,
 		})
 	}
 	e.Store.TouchClock(now)

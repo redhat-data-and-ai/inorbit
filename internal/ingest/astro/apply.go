@@ -22,6 +22,39 @@ func Apply(st *store.Memory, eng *engine.Engine, dags []domain.DAG, now time.Tim
 	eng.Recompute(now)
 }
 
+// MergeLiveAndMart prefers live Airflow rows, then adds warehouse-mart DAGs
+// for products (or dag_ids) the listed deployments did not return.
+func MergeLiveAndMart(live, mart []domain.DAG) []domain.DAG {
+	type key struct{ product, dag string }
+	seen := map[key]struct{}{}
+	k := func(d domain.DAG) key {
+		return key{
+			product: strings.ToLower(strings.TrimSpace(d.DataProductID)),
+			dag:     strings.ToLower(strings.TrimSpace(d.DAGID)),
+		}
+	}
+	out := make([]domain.DAG, 0, len(live)+len(mart))
+	for _, d := range live {
+		if strings.TrimSpace(d.DAGID) == "" {
+			continue
+		}
+		seen[k(d)] = struct{}{}
+		out = append(out, d)
+	}
+	for _, d := range mart {
+		if strings.TrimSpace(d.DAGID) == "" {
+			continue
+		}
+		id := k(d)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, d)
+	}
+	return out
+}
+
 // dedupeLatest keeps one row per dag_id: the deployment whose latest run
 // is newest. Empty runs lose to a run.
 func dedupeLatest(dags []domain.DAG) []domain.DAG {
