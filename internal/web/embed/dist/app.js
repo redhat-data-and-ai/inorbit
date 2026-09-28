@@ -8,10 +8,12 @@ const state = {
   tableFilter: "",
   sourceFilter: "all",
   healthFilter: "all",
+  typeFilter: "all",
   listSort: "name",
   runFilter: "all",
   freshnessFilter: "all",
   qualityStatusFilter: "all",
+  lineageKind: "all",
   tableSort: "",
   tableSortDir: "asc",
   expanded: {},
@@ -145,14 +147,27 @@ function pipelineSummary(rows) {
   return { label: worst, cls: worst === "Trusted" ? "ok" : "bad", detail: list.length + " DAGs" };
 }
 
-function qualitySummary(rows) {
+function qualitySummary(rows, sources) {
   const list = (rows || []).filter((c) => c.source_type === "VALIDATION" || c.source_type === "DBT_TEST");
   const failed = list.filter((c) => c.status === "FAILED").length;
   const warn = list.filter((c) => c.status === "WARNING").length;
-  if (!list.length) return { label: "No checks", cls: "muted", detail: "Not configured" };
+  const vxStatus = sources && sources.validation ? sources.validation.status : "";
+  if (!list.length) {
+    if (vxStatus === "missing") return { label: "No checks", cls: "muted", detail: "Validation checks not exist" };
+    if (vxStatus === "ok") return { label: "No checks", cls: "muted", detail: "No rows in latest run" };
+    return { label: "No checks", cls: "muted", detail: "Not configured" };
+  }
   if (failed) return { label: failed + " failed", cls: "bad", detail: list.length + " checks" };
   if (warn) return { label: warn + " warning", cls: "warn", detail: list.length + " checks" };
   return { label: "Passing", cls: "ok", detail: list.length + " checks" };
+}
+
+function lineageSummary(lin) {
+  lin = lin || {};
+  const up = lin.upstream_count != null ? Number(lin.upstream_count) : (lin.upstream_sources || []).length;
+  const down = lin.direct_downstream_count != null ? Number(lin.direct_downstream_count) : (lin.downstream_consumers || []).length;
+  const impact = lin.blast_radius_score || (lin.blast_radius_count ? lin.blast_radius_count + " blast radius" : "Warehouse mart");
+  return { label: up + " up · " + down + " down", detail: impact, up, down };
 }
 
 function label(status) {
@@ -551,6 +566,7 @@ function resetViewState(route) {
   state.runFilter = "all";
   state.freshnessFilter = "all";
   state.qualityStatusFilter = "all";
+  state.lineageKind = "all";
   state.tableSort = "";
   state.tableSortDir = "asc";
   state.expanded = {};
@@ -583,7 +599,8 @@ function tile(k, v, s, href) {
 
 function tilesHTML(snap, hrefBase) {
   const pipe = pipelineSummary(snap.pipeline);
-  const qual = qualitySummary(snap.quality);
+  const qual = qualitySummary(snap.quality, snap.quality_sources);
+  const lin = lineageSummary(snap.lineage);
   const h = snap.health || {};
   const f = snap.freshness || {};
   const score = h.total_checks ? fmtScore(h.health_score) : "—";
@@ -592,6 +609,7 @@ function tilesHTML(snap, hrefBase) {
       ${tile("Health", esc(score), label(h.status))}
       ${tile("Pipeline", esc(pipe.label), label(f.freshness_status) + " " + esc(pipe.detail), hrefBase ? hrefBase + "?tab=pipeline" : "")}
       ${tile("Quality", esc(qual.label), esc(qual.detail), hrefBase ? hrefBase + "?tab=quality" : "")}
+      ${tile("Lineage", esc(lin.label), esc(lin.detail), hrefBase ? hrefBase + "?tab=lineage" : "")}
     </div>`;
 }
 
@@ -605,6 +623,7 @@ function fetchBanner(extra) {
     extra,
     "Airflow " + (parseDate(m.last_astro_run_poll) ? fmtRelative(m.last_astro_run_poll) : "—"),
     "Quality " + (parseDate(m.last_quality_poll) ? fmtRelative(m.last_quality_poll) : "—"),
+    "Lineage " + (parseDate(m.last_lineage_poll) ? fmtRelative(m.last_lineage_poll) : "—"),
     "Scores " + (parseDate(m.last_clock_tick) ? fmtRelative(m.last_clock_tick) : "—"),
   ].filter((x) => x && !String(x).endsWith("—"));
   return `${warn}<p class="fetch-banner" title="${esc("Airflow " + fmtTime(m.last_astro_run_poll) + " · Quality " + fmtTime(m.last_quality_poll) + " · " + localZone())}">Showing live snapshot · ${bits.map(esc).join(" · ")}</p>`;
@@ -619,10 +638,20 @@ function renderList() {
   const all = state.snaps || [];
   const healthCounts = { trusted: 0, caution: 0, at_risk: 0, other: 0 };
   all.forEach((s) => { healthCounts[productHealthBucket((s.health || {}).status)] += 1; });
+  const typeCounts = { aggregate: 0, "source-aligned": 0, other: 0 };
+  all.forEach((s) => {
+    const t = String((s.data_product || {}).dp_type || "").toLowerCase();
+    if (t === "aggregate") typeCounts.aggregate += 1;
+    else if (t === "source-aligned" || t === "source") typeCounts["source-aligned"] += 1;
+    else typeCounts.other += 1;
+  });
   const q = state.filter.trim().toLowerCase();
   let snaps = all.filter((s) => {
     const bucket = productHealthBucket((s.health || {}).status);
     if (state.healthFilter !== "all" && bucket !== state.healthFilter) return false;
+    const t = String((s.data_product || {}).dp_type || "").toLowerCase();
+    if (state.typeFilter === "aggregate" && t !== "aggregate") return false;
+    if (state.typeFilter === "source-aligned" && t !== "source-aligned" && t !== "source") return false;
     if (!q) return true;
     const p = s.data_product || {};
     return [p.data_product_name, p.data_product_id, p.owner_team, p.dp_type].some((v) => String(v || "").toLowerCase().includes(q));
@@ -664,7 +693,7 @@ function renderList() {
     <div class="toolbar">
       <div>
         <h1>Data products</h1>
-        <p class="lede">Live health, pipeline SLA, and quality from Airflow and warehouse checks.</p>
+        <p class="lede">Live health, pipeline SLA, and quality from Airflow and warehouse checks. Lineage is from the observability mart.</p>
       </div>
       <input class="search" id="filter" type="search" aria-label="Filter by name or team" placeholder="Filter by name or team" value="${esc(state.filter)}" />
     </div>
@@ -675,6 +704,11 @@ function renderList() {
         ["caution", "Caution", healthCounts.caution],
         ["at_risk", "At risk", healthCounts.at_risk],
       ], state.healthFilter, "health")}</div>
+      <div class="filter-cluster"><span class="filter-label">Type</span>${chipGroup([
+        ["all", "All", all.length],
+        ["aggregate", "Aggregate", typeCounts.aggregate],
+        ["source-aligned", "Source-aligned", typeCounts["source-aligned"]],
+      ], state.typeFilter, "type")}</div>
       <div class="filter-cluster"><span class="filter-label">Sort</span>${chipGroup([
         ["name", "Name"],
         ["health", "Health"],
@@ -703,6 +737,122 @@ function dagGetters() {
   };
 }
 
+function nodeKind(n) {
+  const t = String((n && n.type) || "").toLowerCase();
+  if (t === "data_product" || t === "") return "data_product";
+  if (t.includes("fivetran") || t.includes("snowpipe") || t.includes("external")) return "source";
+  if (t === "service_account") return "service_account";
+  if (t === "consumer_group") return "consumer_group";
+  return t || "other";
+}
+
+function lineageNodeHTML(n, known) {
+  const kind = nodeKind(n);
+  const score = n.health_score != null ? fmtScore(n.health_score) : "—";
+  const name = n.name || "—";
+  const canLink = kind === "data_product" && name;
+  const inner = `<span class="lineage-name">${esc(name)}</span>${label(n.status || "UNKNOWN")} <span class="muted-cell">${esc(pretty(n.type || "data product"))} · ${esc(score)}</span>`;
+  if (canLink) {
+    return `<a class="lineage-pill" href="#/data-product/${encodeURIComponent(name)}?tab=lineage">${inner}</a>`;
+  }
+  return `<div class="lineage-pill">${inner}</div>`;
+}
+
+function lineageTable(title, nodes, kind) {
+  const q = state.tableFilter.trim().toLowerCase();
+  let rows = (nodes || []).filter((n) => {
+    if (kind !== "all" && nodeKind(n) !== kind) return false;
+    return rowMatch(q, [n.name, n.type, n.status]);
+  });
+  rows = applyTableSort(rows, {
+    name: (n) => n.name,
+    type: (n) => n.type,
+    status: (n) => n.status,
+    score: (n) => n.health_score,
+  });
+  const empty = emptyRow(4, "No " + title.toLowerCase() + " in the mart.", "Lineage is loaded from the observability MARTS.DP_LINEAGE table, not from Airflow.");
+  return `
+    <div>
+      <h3 class="lineage-h">${esc(title)} <span class="chip-count">${rows.length}</span></h3>
+      <div class="table-wrap lineage-table">
+        <table>
+          <thead><tr>
+            <th>${sortBtn("name", "Name")}</th>
+            <th>${sortBtn("type", "Type")}</th>
+            <th>${sortBtn("status", "Status")}</th>
+            <th>${sortBtn("score", "Health")}</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map((n) => {
+              const kind = nodeKind(n);
+              const nameCell = kind === "data_product" && n.name
+                ? `<a href="#/data-product/${encodeURIComponent(n.name)}?tab=lineage">${esc(n.name)}</a>`
+                : esc(n.name || "—");
+              return `<tr>
+                <td>${nameCell}</td>
+                <td>${esc(pretty(n.type || "data product"))}</td>
+                <td>${label(n.status || "UNKNOWN")}</td>
+                <td>${n.health_score != null ? esc(fmtScore(n.health_score)) : "—"}</td>
+              </tr>`;
+            }).join("") || empty}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderLineage(snap, base) {
+  const lin = snap.lineage || {};
+  const up = lin.upstream_sources || [];
+  const down = lin.downstream_consumers || [];
+  const kind = state.lineageKind;
+  const allNodes = up.concat(down);
+  const counts = {
+    all: allNodes.length,
+    data_product: allNodes.filter((n) => nodeKind(n) === "data_product").length,
+    source: allNodes.filter((n) => nodeKind(n) === "source").length,
+    service_account: allNodes.filter((n) => nodeKind(n) === "service_account").length,
+    consumer_group: allNodes.filter((n) => nodeKind(n) === "consumer_group").length,
+  };
+  const known = {};
+  (state.snaps || []).forEach((s) => {
+    const p = s.data_product || {};
+    if (p.data_product_id) known[p.data_product_id] = true;
+    if (p.data_product_name) known[p.data_product_name] = true;
+  });
+  const impact = lin.blast_radius_score ? label(lin.blast_radius_score) : "";
+  const computed = parseDate(lin.computed_at) ? fmtRelative(lin.computed_at) : "—";
+  return `
+    <div class="chart-grid hero">
+      ${donut(1, String(lin.upstream_count || up.length), "Upstream", "info")}
+      ${donut(1, String(lin.direct_downstream_count || down.length), "Downstream", "ok")}
+      ${donut(1, String(lin.blast_radius_count || 0), "Blast radius", lin.blast_radius_score ? "bad" : "info")}
+    </div>
+    <div class="lineage-flow">
+      <div class="lineage-col up">${up.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No upstream</p>`}</div>
+      <div class="lineage-center">
+        <div class="k">This product</div>
+        <div class="v">${esc((snap.data_product || {}).data_product_name || "")}</div>
+        <div class="s">${label((snap.health || {}).status)}${impact ? " " + impact : ""}</div>
+      </div>
+      <div class="lineage-col down">${down.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No downstream</p>`}</div>
+    </div>
+    ${tableToolbar(allNodes.length, allNodes.length, "Filter lineage by name or type",
+      chipGroup([
+        ["all", "All", counts.all],
+        ["data_product", "Data products", counts.data_product],
+        ["source", "Sources", counts.source],
+        ["service_account", "Service accounts", counts.service_account],
+        ["consumer_group", "Consumer groups", counts.consumer_group],
+      ], kind, "lkind")
+    )}
+    <div class="lineage-grid">
+      ${lineageTable("Upstream sources", up, kind)}
+      ${lineageTable("Downstream consumers", down, kind)}
+    </div>
+    <p class="sub">From the observability warehouse mart (DP_LINEAGE), not a live poll. Computed ${esc(computed)}. ${lin.direct_dp_consumer_count || 0} downstream data products · ${lin.service_account_count || 0} service accounts · ${lin.consumer_group_count || 0} consumer groups.</p>`;
+}
+
 function renderDetail(route) {
   const snap = state.snaps.find((s) => s.data_product.data_product_id === route.id);
   if (!snap) {
@@ -711,7 +861,7 @@ function renderDetail(route) {
   const p = snap.data_product;
   const tab = route.tab;
   const base = `#/data-product/${encodeURIComponent(route.id)}`;
-  const tabs = ["overview", "pipeline", "quality"].map((t) => {
+  const tabs = ["overview", "pipeline", "quality", "lineage"].map((t) => {
     const href = `${base}?tab=${t}`;
     return `<button class="tab ${tab === t ? "active" : ""}" data-href="${href}">${pretty(t)}</button>`;
   }).join("");
@@ -727,7 +877,7 @@ function renderDetail(route) {
     const caution = all.filter((d) => dagFreshBucket(d) === "caution").length;
     const trusted = all.filter((d) => dagFreshBucket(d) === "trusted").length;
     const ok = success;
-    const dagEmptyHint = "InOrbit matches Airflow tags to each product id and name from config (hyphens and underscores ignored). Add the DAG deployment under astro.deployments and the product under data_products.";
+    const dagEmptyHint = "Live Airflow only lists deployments in config. The warehouse pipeline mart fills DAGs for catalog products that are not on those deployments.";
     let rows = all.filter((d) => {
       if (state.runFilter !== "all" && dagRunBucket(d) !== state.runFilter) return false;
       if (state.freshnessFilter !== "all" && dagFreshBucket(d) !== state.freshnessFilter) return false;
@@ -809,14 +959,19 @@ function renderDetail(route) {
     const dbt = all.filter((c) => c.source_type === "DBT_TEST").length;
     const latestDbt = all.filter((c) => c.source_type === "DBT_TEST").map((c) => c.executed_at).filter(Boolean).sort().slice(-1)[0];
     const latestVx = all.filter((c) => c.source_type === "VALIDATION").map((c) => c.executed_at).filter(Boolean).sort().slice(-1)[0];
+    const sources = snap.quality_sources || {};
+    const vxMissing = sources.validation && sources.validation.status === "missing";
+    const dbtMissing = sources.dbt && sources.dbt.status === "missing";
     const emptyTitle = src === "DBT_TEST"
-      ? "No Elementary rows in the latest dbt invocation for this product."
+      ? (dbtMissing ? "Elementary checks not exist" : "No Elementary rows in the latest dbt invocation for this product.")
       : src === "VALIDATION"
-        ? "No validation rows in the latest warehouse run for this product."
-        : "No validation or Elementary checks in the latest warehouse run.";
+        ? (vxMissing ? "Validation checks not exist" : "No validation rows in the latest warehouse run for this product.")
+        : (vxMissing && !dbt ? "Validation checks not exist" : "No validation or Elementary checks in the latest warehouse run.");
     const emptyHint = all.length
       ? "Clear the source or status chips, or the search box."
-      : "Validation ingest is skipped when that table is missing. Elementary still loads from DBTLOGS when that table exists.";
+      : vxMissing
+        ? "The validation warehouse table does not exist for this product, so ingest skips it."
+        : "Validation ingest is skipped when that table is missing. Elementary still loads from DBTLOGS when that table exists.";
     body = `
       <div class="chart-grid hero">
         ${segmentDonut([
@@ -865,7 +1020,9 @@ function renderDetail(route) {
           </tbody>
         </table>
       </div>
-      <p class="sub">${vx} validation${latestVx ? " " + fmtRelative(latestVx) : ""} · ${dbt} Elementary${latestDbt ? " " + fmtRelative(latestDbt) : ""}. Latest warehouse invocation only.</p>`;
+      <p class="sub">${vxMissing ? "Validation checks not exist" : vx + " validation" + (latestVx ? " " + fmtRelative(latestVx) : "")} · ${dbtMissing ? "Elementary checks not exist" : dbt + " Elementary" + (latestDbt ? " " + fmtRelative(latestDbt) : "")}. Latest warehouse invocation only.</p>`;
+  } else if (tab === "lineage") {
+    body = renderLineage(snap, base);
   } else {
     const h = snap.health || {};
     const f = snap.freshness || {};
@@ -874,7 +1031,7 @@ function renderDetail(route) {
       ${tilesHTML(snap, base)}
       ${overviewCharts(snap)}
       <p class="msg ${cls}">${esc(h.status_message || f.status_reason || "No status message")}</p>
-      <p class="sub">Health Score v2 from live validation/Elementary and Astro pipeline checks. Open Pipeline for Status, SLA, and Astro links.</p>`;
+      <p class="sub">Health Score v2 from live validation/Elementary and Astro pipeline checks. Open Pipeline for Status, SLA, and Astro links. Lineage is the warehouse mart graph.</p>`;
   }
   const updatedRel = parseDate(snap.updated_at) ? fmtRelative(snap.updated_at) : "—";
   return `
@@ -931,6 +1088,7 @@ function bindFilters(app) {
   app.querySelectorAll(".chip").forEach((el) => {
     el.addEventListener("click", () => {
       if (el.dataset.health) state.healthFilter = el.dataset.health;
+      if (el.dataset.type) state.typeFilter = el.dataset.type;
       if (el.dataset.listSort) state.listSort = el.dataset.listSort;
       if (el.dataset.source) {
         state.sourceFilter = el.dataset.source;
@@ -939,6 +1097,7 @@ function bindFilters(app) {
       if (el.dataset.run) state.runFilter = el.dataset.run;
       if (el.dataset.fresh) state.freshnessFilter = el.dataset.fresh;
       if (el.dataset.qstatus) state.qualityStatusFilter = el.dataset.qstatus;
+      if (el.dataset.lkind) state.lineageKind = el.dataset.lkind;
       render();
     });
   });
@@ -985,18 +1144,20 @@ async function refresh() {
   const route = parseRoute();
   if (route.view === "detail") {
     const base = "/v1/data-products/" + encodeURIComponent(route.id);
-    const [snap, health, freshness, pipeline, quality, trend] = await Promise.all([
+    const [snap, health, freshness, pipeline, quality, lineage, trend] = await Promise.all([
       getJSON(base),
       getJSON(base + "/health"),
       getJSON(base + "/freshness"),
       getJSON(base + "/pipeline"),
       getJSON(base + "/quality"),
+      getJSON(base + "/lineage"),
       getJSON(base + "/health-trend"),
     ]);
     snap.health = health;
     snap.freshness = freshness;
     snap.pipeline = pipeline;
     snap.quality = quality;
+    snap.lineage = lineage;
     snap.trend = trend;
     state.snaps = [snap];
   } else {
