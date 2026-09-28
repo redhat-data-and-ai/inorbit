@@ -67,3 +67,14 @@ func TestMatchDAGDoesNotAttachBareDaily(t *testing.T) {
 		t.Fatalf("dbt_inorbit_daily: %+v ok=%v", got, ok)
 	}
 }
+
+func TestMatchDAGCompactProductId(t *testing.T) {
+	products := []domain.DataProduct{
+		{ID: "sales", Name: "sales"},
+		{ID: "catalogsales", Name: "catalogsales"},
+	}
+	got, ok := MatchDAG("dbt_catalog_sales_daily", nil, "", products, nil)
+	if !ok || got.ID != "catalogsales" {
+		t.Fatalf("dbt_catalog_sales_daily should attach to catalogsales, got %+v ok=%v", got, ok)
+	}
+}

@@ -10,7 +10,7 @@ import (
 // Match assigns a DAG to a configured data product.
 // Prefer the explicit dag_id map, then dataproduct_name, then the first
 // non-system tag, then any product-named tag, then a dag_id path token
-// equal to the product id/name (longest wins).
+// or compact id (catalogsales vs dbt_catalog_sales_daily). Longest product id wins.
 func Match(dagID string, tags []string, products []domain.DataProduct, extra map[string]string) (domain.DataProduct, bool) {
 	return MatchDAG(dagID, tags, "", products, extra)
 }
@@ -54,11 +54,12 @@ func MatchDAG(dagID string, tags []string, dataproductName string, products []do
 	return domain.DataProduct{}, false
 }
 
-// dagIDProductMatchLen is the length of the product id/name token found in dag_id.
-// Tokens are split on non-alphanumerics so a bare "daily" DAG does not attach to
-// a product named "inorbit", while dbt_inorbit_daily still does.
+// dagIDProductMatchLen is the length of the product id/name found in dag_id.
+// Exact path tokens win first so a bare "daily" DAG does not attach to
+// "inorbit". Compact match covers ids like catalogsales vs dbt_catalog_sales_daily.
 func dagIDProductMatchLen(dagID string, p domain.DataProduct) int {
 	best := 0
+	hay := canon(dagID)
 	for _, needle := range []string{canon(p.ID), canon(p.Name)} {
 		if needle == "" {
 			continue
@@ -67,6 +68,9 @@ func dagIDProductMatchLen(dagID string, p domain.DataProduct) int {
 			if tok == needle && len(needle) > best {
 				best = len(needle)
 			}
+		}
+		if len(needle) >= 3 && strings.Contains(hay, needle) && len(needle) > best {
+			best = len(needle)
 		}
 	}
 	return best
