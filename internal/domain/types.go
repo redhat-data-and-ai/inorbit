@@ -232,13 +232,59 @@ type Subscription struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// LineageNode is one upstream source or downstream consumer from MARTS.DP_LINEAGE.
+type LineageNode struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	HealthScore *float64 `json:"health_score,omitempty"`
+}
+
+// Lineage is warehouse mart lineage for one data product. Not live-polled from Airflow.
+type Lineage struct {
+	DataProductID         string        `json:"data_product_id"`
+	DataProductName       string        `json:"data_product_name"`
+	Status                string        `json:"status,omitempty"`
+	HealthScore           *float64      `json:"health_score,omitempty"`
+	UpstreamSources       []LineageNode `json:"upstream_sources"`
+	UpstreamCount         int           `json:"upstream_count"`
+	DownstreamConsumers   []LineageNode `json:"downstream_consumers"`
+	DirectDownstreamCount int           `json:"direct_downstream_count"`
+	DirectDPConsumerCount int           `json:"direct_dp_consumer_count"`
+	ServiceAccountCount   int           `json:"service_account_count"`
+	ConsumerGroupCount    int           `json:"consumer_group_count"`
+	BlastRadiusCount      int           `json:"blast_radius_count"`
+	BlastRadiusScore      string        `json:"blast_radius_score,omitempty"`
+	ComputedAt            time.Time     `json:"computed_at,omitempty"`
+}
+
+const (
+	QualityOK       = "ok"
+	QualityMissing  = "missing"
+	QualityDisabled = "disabled"
+)
+
+// QualitySource is whether a warehouse quality table was readable this poll.
+type QualitySource struct {
+	Status   string `json:"status"`
+	Relation string `json:"relation,omitempty"`
+}
+
+// QualitySources is per-product validation / dbt table availability.
+type QualitySources struct {
+	Validation QualitySource `json:"validation"`
+	DBT        QualitySource `json:"dbt"`
+}
+
 type Snapshot struct {
-	DataProduct DataProduct      `json:"data_product"`
-	Health      HealthStatus     `json:"health"`
-	Freshness   FreshnessSLA     `json:"freshness"`
-	Pipeline    []PipelineStatus `json:"pipeline"`
-	Quality     []Check          `json:"quality"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	DataProduct    DataProduct      `json:"data_product"`
+	Health         HealthStatus     `json:"health"`
+	Freshness      FreshnessSLA     `json:"freshness"`
+	Pipeline       []PipelineStatus `json:"pipeline"`
+	Quality        []Check          `json:"quality"`
+	QualitySources QualitySources   `json:"quality_sources"`
+	Lineage        Lineage          `json:"lineage"`
+	UpdatedAt      time.Time        `json:"updated_at"`
 }
 
 type PollMeta struct {
@@ -250,6 +296,7 @@ type PollMeta struct {
 	LastAstroRunPoll      time.Time     `json:"last_astro_run_poll,omitempty"`
 	LastAstroTagPoll      time.Time     `json:"last_astro_tag_poll,omitempty"`
 	LastQualityPoll       time.Time     `json:"last_quality_poll,omitempty"`
+	LastLineagePoll       time.Time     `json:"last_lineage_poll,omitempty"`
 	LastClockTick         time.Time     `json:"last_clock_tick,omitempty"`
 	DataProductCount      int           `json:"data_product_count"`
 	SnapshotBytesEstimate int           `json:"snapshot_bytes_estimate"`

@@ -63,5 +63,17 @@
         }
       }
     }
-  ]
+  ],
+  "lineage": {
+    "enabled": true,
+    "database": "INORBIT_DB",
+    "schema": "MARTS",
+    "table": "DP_LINEAGE"
+  },
+  "pipeline": {
+    "enabled": true,
+    "database": "INORBIT_DB",
+    "schema": "MARTS",
+    "table": "PIPELINE_STATUS"
+  }
 }

@@ -22,8 +22,8 @@ func estimateScale(in scaleInput) domain.ScaleEstimate {
 		CheckCount:          in.checks,
 		HealthHistoryPoints: in.histPoints,
 		SnapshotJSONBytes:   in.snapshotJSON,
-		AirflowPoll:         "O(deployments × listed DAGs) to enumerate, then O(matched DAGs) latest-run fetches (8 workers). Extra products on the same deployments do not re-list Airflow; run fetches grow with matched DAGs.",
-		QualityPoll:         "O(data products) sequential queries on one Snowflake session. Missing validation/Elementary tables are skipped. At 200 products budget 1–5 minutes unless you raise the quality interval.",
+		AirflowPoll:         "O(deployments × listed DAGs) to enumerate, then O(matched DAGs) latest-run history (8 workers, up to 400 runs/DAG). Extra products on the same deployments do not re-list Airflow. A 40-product / 14-deployment live fleet took ~4.5 minutes sequential; wall time is dominated by deployments with long run history. Raise the 90s Airflow interval if a poll overruns.",
+		QualityPoll:         "O(data products) sequential queries on one Snowflake session, plus lineage-mart and pipeline-mart queries. Missing validation/Elementary tables are skipped. A 40-product live fleet took ~40s; at 200 products budget 1–5 minutes unless you raise the quality interval.",
 		ClockTick:           "O(data products × DAGs) in process, no I/O. 15s ticks stay cheap at 200 products.",
 	}
 	if in.products > 0 {

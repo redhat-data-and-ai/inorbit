@@ -10,12 +10,16 @@ import (
 
 // Memory holds the live snapshot for every data product. Not history.
 type Memory struct {
-	mu       sync.RWMutex
-	products map[string]domain.DataProduct
-	dags     map[string][]domain.DAG
-	checks   map[string][]domain.Check
-	snaps    map[string]domain.Snapshot
-	hist     map[string][]domain.HealthPoint
+	mu        sync.RWMutex
+	products  map[string]domain.DataProduct
+	dags      map[string][]domain.DAG
+	livePipe  []domain.DAG
+	martPipe  []domain.DAG
+	checks    map[string][]domain.Check
+	qsrc      map[string]domain.QualitySources
+	lineage   map[string]domain.Lineage
+	snaps     map[string]domain.Snapshot
+	hist      map[string][]domain.HealthPoint
 	subs      map[string]domain.Subscription
 	snapBytes map[string]int
 	meta      domain.PollMeta
@@ -25,7 +29,11 @@ func New() *Memory {
 	return &Memory{
 		products:  map[string]domain.DataProduct{},
 		dags:      map[string][]domain.DAG{},
+		livePipe:  []domain.DAG{},
+		martPipe:  []domain.DAG{},
 		checks:    map[string][]domain.Check{},
+		qsrc:      map[string]domain.QualitySources{},
+		lineage:   map[string]domain.Lineage{},
 		snaps:     map[string]domain.Snapshot{},
 		hist:      map[string][]domain.HealthPoint{},
 		subs:      map[string]domain.Subscription{},
@@ -46,11 +54,65 @@ func (m *Memory) SetDAGs(dataProductID string, dags []domain.DAG) {
 	m.dags[dataProductID] = copied
 }
 
+func (m *Memory) SetLivePipeline(dags []domain.DAG) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.livePipe = append([]domain.DAG(nil), dags...)
+}
+
+func (m *Memory) LivePipeline() []domain.DAG {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domain.DAG(nil), m.livePipe...)
+}
+
+func (m *Memory) SetMartPipeline(dags []domain.DAG) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.martPipe = append([]domain.DAG(nil), dags...)
+}
+
+func (m *Memory) MartPipeline() []domain.DAG {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domain.DAG(nil), m.martPipe...)
+}
+
 func (m *Memory) SetChecks(dataProductID string, checks []domain.Check) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	copied := append([]domain.Check(nil), checks...)
 	m.checks[dataProductID] = copied
+}
+
+func (m *Memory) SetQualitySources(dataProductID string, src domain.QualitySources) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.qsrc[dataProductID] = src
+}
+
+func (m *Memory) QualitySources(id string) domain.QualitySources {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.qsrc[id]
+}
+
+func (m *Memory) SetLineage(dataProductID string, lin domain.Lineage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lin.UpstreamSources == nil {
+		lin.UpstreamSources = []domain.LineageNode{}
+	}
+	if lin.DownstreamConsumers == nil {
+		lin.DownstreamConsumers = []domain.LineageNode{}
+	}
+	m.lineage[dataProductID] = lin
+}
+
+func (m *Memory) Lineage(id string) domain.Lineage {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lineage[id]
 }
 
 func (m *Memory) PutSnapshot(s domain.Snapshot) {
@@ -222,4 +284,8 @@ func (m *Memory) TouchAstroTags(t time.Time) {
 
 func (m *Memory) TouchQuality(t time.Time) {
 	m.SetMeta(func(p *domain.PollMeta) { p.LastQualityPoll = t.UTC() })
+}
+
+func (m *Memory) TouchLineage(t time.Time) {
+	m.SetMeta(func(p *domain.PollMeta) { p.LastLineagePoll = t.UTC() })
 }

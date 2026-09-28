@@ -24,12 +24,13 @@ type Deployment struct {
 }
 
 type Client struct {
-	HTTP        *http.Client
-	Token       string
-	Deployments []Deployment
-	Log         *log.Logger
-	resolved    sync.Map // deployment name → working Airflow API base
-	tagCache    sync.Map // deployment/dag_id → tags JSON
+	HTTP          *http.Client
+	Token         string
+	Deployments   []Deployment
+	Log           *log.Logger
+	DAGRunTimeout time.Duration
+	resolved      sync.Map // deployment name → working Airflow API base
+	tagCache      sync.Map // deployment/dag_id → tags JSON
 }
 
 type dagAPI struct {
@@ -55,15 +56,29 @@ type dagRunAPI struct {
 }
 
 const (
-	runPageSize = 100
-	runMaxPages = 4
+	runPageSize     = 100
+	runMaxPages     = 4
+	defaultRunWait  = 12 * time.Second
+	deployFetchConc = 4
 )
 
 func (c *Client) http() *http.Client {
 	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 60 * time.Second}
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.MaxIdleConns = 64
+		t.MaxIdleConnsPerHost = 16
+		t.IdleConnTimeout = 90 * time.Second
+		t.ResponseHeaderTimeout = 20 * time.Second
+		c.HTTP = &http.Client{Timeout: 30 * time.Second, Transport: t}
 	}
 	return c.HTTP
+}
+
+func (c *Client) dagRunTimeout() time.Duration {
+	if c.DAGRunTimeout > 0 {
+		return c.DAGRunTimeout
+	}
+	return defaultRunWait
 }
 
 // FetchLatest pulls DAG tags + latest run per DAG for one deployment,
@@ -86,20 +101,58 @@ func (c *Client) FetchLatest(ctx context.Context, dep Deployment, dataProductByD
 // FetchForProducts lists DAGs on every deployment and keeps those that match
 // configured data products (explicit dag_id, tag, or name in dag_id).
 func (c *Client) FetchForProducts(ctx context.Context, products []domain.DataProduct, extra map[string]string) ([]domain.DAG, error) {
-	var out []domain.DAG
-	var last error
+	start := time.Now()
+	deps := make([]Deployment, 0, len(c.Deployments))
 	for _, dep := range c.Deployments {
 		if strings.TrimSpace(dep.AirflowAPIURL) == "" && dep.ID == "" {
 			continue
 		}
-		dags, err := c.fetchDeployment(ctx, dep, products, extra)
-		if err != nil {
-			last = err
-			c.logf("airflow %s: %v", dep.Name, err)
+		deps = append(deps, dep)
+	}
+	if len(deps) == 0 {
+		return nil, nil
+	}
+
+	type result struct {
+		dags []domain.DAG
+		err  error
+	}
+	ch := make(chan result, len(deps))
+	sem := make(chan struct{}, deployFetchConc)
+	var wg sync.WaitGroup
+	for _, dep := range deps {
+		wg.Add(1)
+		go func(dep Deployment) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				ch <- result{err: ctx.Err()}
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+			dags, err := c.fetchDeployment(ctx, dep, products, extra)
+			if err != nil {
+				c.logf("airflow %s: %v", dep.Name, err)
+			}
+			ch <- result{dags: dags, err: err}
+		}(dep)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	var out []domain.DAG
+	var last error
+	for res := range ch {
+		if res.err != nil {
+			last = res.err
 			continue
 		}
-		out = append(out, dags...)
+		out = append(out, res.dags...)
 	}
+	c.logf("airflow all deployments: %d deployment(s) %d dag(s) took=%s", len(deps), len(out), time.Since(start).Round(time.Millisecond))
 	if len(out) == 0 && last != nil {
 		return nil, last
 	}
@@ -113,6 +166,7 @@ func (c *Client) logf(format string, args ...any) {
 }
 
 func (c *Client) fetchDeployment(ctx context.Context, dep Deployment, products []domain.DataProduct, extra map[string]string) ([]domain.DAG, error) {
+	start := time.Now()
 	listed, err := c.listDAGs(ctx, dep)
 	if err != nil {
 		return nil, err
@@ -153,8 +207,6 @@ func (c *Client) fetchDeployment(ctx context.Context, dep Deployment, products [
 		}
 		keep = append(keep, matched{raw: raw, product: product})
 	}
-	c.logf("airflow %s: listed=%d with_tags=%d matched=%d skipped_inactive=%d unmatched=%d kept=%s dropped=%s",
-		dep.Name, len(listed), withTags, len(keep), skipped, len(listed)-len(keep)-skipped, strings.Join(matchedIDs, ","), strings.Join(unmatched, ","))
 
 	out := make([]domain.DAG, len(keep))
 	var wg sync.WaitGroup
@@ -186,6 +238,8 @@ func (c *Client) fetchDeployment(ctx context.Context, dep Deployment, products [
 		}(i, item)
 	}
 	wg.Wait()
+	c.logf("airflow %s: listed=%d with_tags=%d matched=%d skipped_inactive=%d unmatched=%d kept=%s dropped=%s took=%s",
+		dep.Name, len(listed), withTags, len(keep), skipped, len(listed)-len(keep)-skipped, strings.Join(matchedIDs, ","), strings.Join(unmatched, ","), time.Since(start).Round(time.Millisecond))
 	kept := out[:0]
 	for _, d := range out {
 		if d.DAGID == "" || !dagAvailable(d) {
@@ -350,6 +404,8 @@ func (c *Client) fillDAGTags(ctx context.Context, dep Deployment, raw dagAPI) (d
 }
 
 func (c *Client) getDAG(ctx context.Context, dep Deployment, dagID string) (*dagAPI, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.dagRunTimeout())
+	defer cancel()
 	u := c.apiBase(dep) + "/dags/" + url.PathEscape(dagID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -405,6 +461,8 @@ func (c *Client) listRuns(ctx context.Context, dep Deployment, dagID, state stri
 }
 
 func (c *Client) fetchRunPage(ctx context.Context, dep Deployment, dagID, state string, limit, offset int) ([]dagRunAPI, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.dagRunTimeout())
+	defer cancel()
 	q := url.Values{}
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("offset", fmt.Sprintf("%d", offset))
