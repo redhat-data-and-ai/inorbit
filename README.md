@@ -9,6 +9,8 @@ flowchart LR
   subgraph sources [Sources]
     AF[Airflow]
     Q[Validation + dbt]
+    L[Lineage mart]
+    P[Pipeline mart]
     C[JSON catalog]
   end
   subgraph inorbit [One process]
@@ -17,6 +19,8 @@ flowchart LR
   end
   AF --> S
   Q --> S
+  L --> S
+  P --> S
   C --> S
   S --> E
   E --> UI[Dashboard]
@@ -24,7 +28,7 @@ flowchart LR
   E --> SL[Slack]
 ```
 
-Warehouse models stay for history, lineage, and catalog. They are not on the dashboard request path.
+Warehouse models stay for history, lineage, and pipeline fill. Clicks still read the in-memory snapshot.
 
 ## What you get
 
@@ -33,6 +37,7 @@ Warehouse models stay for history, lineage, and catalog. They are not on the das
 | **Health** | One score per product. Failed checks deduct; unknown dimensions weigh 0; SLA age still counts. |
 | **Pipeline** | Active DAGs only: status, SLA, last/next run, timing, 7/30/90d reliability, **Open in Astro**. Freshness lives here — same table, not a second tab. |
 | **Quality** | Latest validation and dbt / Elementary results, aggregated into the snapshot (not a copy of every warehouse row). |
+| **Lineage** | Upstream sources and downstream consumers from `{observability_db}.MARTS.DP_LINEAGE`. Warehouse mart, not a live Airflow poll. |
 | **Alerts** | Subscribe a Slack channel per product and audience. Alerts follow the same snapshot with the UI closed. |
 
 Custom / ad-hoc DAGs stay visible. They are **not scored** and do not drive product SLA age.
@@ -42,7 +47,7 @@ Custom / ad-hoc DAGs stay visible. They are **not scored** and do not drive prod
 Needs [Go 1.23+](https://go.dev/dl/). No Airflow token. No warehouse login.
 
 ```bash
-git clone https://github.com/redhat-data-and-ai/inorbit.git
+git clone https://github.com/inorbit/inorbit.git
 cd inorbit
 make test
 make run
@@ -93,7 +98,7 @@ Demo is the default. Live mode polls Airflow on startup, then on the run/tag int
 cp configs/live.example.json configs/live.json
 ```
 
-2. Replace the sample `alpha` / `beta` products and `prod` / `stage` deployments with yours. Shared Snowflake **account**, role, and warehouse go in that file. Tokens and `SNOWFLAKE_USER` stay in the environment (or a gitignored `.env`).
+2. Replace the sample products and deployments with yours. Add an object under `astro.deployments` for every Airflow workspace you want live Pipeline for. Shared Snowflake **account**, role, and warehouse go in that file. Tokens and `SNOWFLAKE_USER` stay in the environment (or a gitignored `.env`). Empty `${...}` deployment ids are skipped.
 
 3. Export secrets and start:
 
@@ -132,8 +137,8 @@ curl -s localhost:8080/v1/data-products/<your-id>/pipeline | python3 -m json.too
 ### Is it actually live?
 
 1. `GET /v1/meta` — `mode` is `live`, `last_astro_run_poll` is within ~90s, `data_product_count` matches `data_products` in config.
-2. Open each product → **Pipeline**. You should see DAGs that tag or token-match that product, on the deployments you listed. Empty or stale Airflow rows stay off the table.
-3. Click **Open in Astro**. Last success should match InOrbit’s `last_successful_at` (seconds-level).
+2. Open each product → **Pipeline**. You should see DAGs from listed Airflow deployments **and** from the warehouse pipeline mart for catalog products those deployments do not return.
+3. Click **Open in Astro**. Last success should match InOrbit’s `last_successful_at` (seconds-level) on live rows; mart `astro_url` is passed through from the warehouse.
 4. Quality tables in that product’s `quality` block should match the Quality tab. Missing objects are skipped (0 rows).
 
 Marts lag and may filter paused/stage DAGs. Use them as lagged confirmation, not as the live source of truth.
@@ -165,6 +170,18 @@ Live quality is per data product in config. Override `database`, `schema`, and `
 
 Health Score v2 is computed in process: only `FAILED` deducts, `UNKNOWN` dimensions have weight 0, coverage caps apply, and Astro freshness/pipeline virtual checks still contribute (except custom DAGs).
 
+## Lineage (warehouse mart)
+
+The Lineage tab is **not** live. It reads `{observability_db}.MARTS.DP_LINEAGE` (override with the `lineage` block in config): upstream sources, downstream consumers, blast radius, and neighbor health. In demo mode the same shape is in `demo.lineage`.
+
+**Pipeline** prefers live Airflow for dag_ids returned by `astro.deployments`. Catalog products with no match there are filled from `{observability_db}.MARTS.PIPELINE_STATUS` (override with the `pipeline` block; defaults to the same database/schema as lineage). List every Airflow deployment you want live; the mart covers the rest without putting hostnames in Go.
+
+Add **your** products under `data_products` in `configs/live.json` (gitignored). Include both `aggregate` and `source-aligned` types; the homepage filters by type. Matching still uses tags, `dag_ids`, and dag_id tokens.
+
+```bash
+curl -s localhost:8080/v1/data-products/alpha/lineage | python3 -m json.tool | head
+```
+
 ## HTTP API
 
 The page only calls `/v1`. Same JSON for any client.
@@ -179,6 +196,7 @@ The page only calls `/v1`. Same JSON for any client.
 | `GET` | `/v1/data-products/{id}/pipeline` |
 | `GET` | `/v1/data-products/{id}/freshness` |
 | `GET` | `/v1/data-products/{id}/quality` |
+| `GET` | `/v1/data-products/{id}/lineage` |
 | `GET` | `/v1/data-products/{id}/health-trend` |
 | `GET` | `/v1/subscriptions` |
 | `POST` | `/v1/subscriptions` |
@@ -199,6 +217,7 @@ InOrbit is a small loop: **ingest → snapshot → evaluate → serve**. Each pi
 |---|---|
 | Watch another data product | `data_products` in JSON |
 | Poll another Airflow deployment | `astro.deployments` |
+| Fill Pipeline from the warehouse mart | `pipeline` table (defaults to `MARTS.PIPELINE_STATUS`) |
 | Pin DAGs that tags miss | `dag_ids` on the product |
 | Point at different quality tables | `quality.validation` / `quality.dbt` per product |
 | Demo a failure mode locally | `demo.dags` / `demo.checks` in `configs/demo.json` |
@@ -217,25 +236,34 @@ Opening a dashboard page does **not** start pollers. An expired UI cache only me
 | SLA clock | 15s | none |
 | Airflow latest runs | 90s | Airflow API per deployment |
 | Airflow DAG tags | 10 min | Airflow API |
-| Quality / dbt logs | 2 min | Warehouse watermark |
+| Quality / dbt / marts | 2 min | Warehouse watermark (quality, lineage, pipeline mart) |
 
 ## 200 data products (memory and speed)
 
 `GET /v1/meta` includes `scale`, projected from the live snapshot to **200** products. The UI masthead shows the same estimate.
 
-- **Memory:** JSON snapshot × 200/N, plus ~3× heap copies and a 48 MiB process floor. Typical 80–200 KiB JSON per product → **~50–150 MiB RSS** at 200.
-- **Airflow:** Listing cost is per deployment, not per product. Latest-run fetches grow with matched DAGs (8 workers). Keep the 90s run poll if matched DAGs stay in the low thousands; raise the interval if a poll overruns.
-- **Quality:** One Snowflake session, sequential latest-run query per product. Missing tables are skipped. Budget **1–5 minutes** at 200 products, or raise `-quality-seconds`.
+Measured on a 40-product live catalog (14 Airflow deployments, HTTP up after ingest):
+
+| | 40 products (this run) | 200 products (linear from snapshot) |
+|---|---|---|
+| Process RSS | **~49 MiB** | **~58 MiB** estimated (`/v1/meta`) |
+| Snapshot JSON | 656 KiB (~17 KiB/product) | ~3.2 MiB |
+| Airflow poll | **~4.5 min** sequential (4 heavy deployments ~60s each) | listing stays per-deployment; run fetches grow with matched DAGs |
+| Quality poll | **~40s** sequential Snowflake | **~3–4 min** if still one query per product |
+| Lineage + pipeline marts | **~5s** together | stays one/two warehouse queries |
+
+- **Memory is not the limiter.** The 48 MiB process floor dominates; even 200 products stay well under 128 MiB.
+- **Time is the limiter.** Default `-astro-run-seconds 90` and `-quality-seconds 120` already overrun at 40 products. Raise them (5–10 min Airflow, 5 min quality) until polls are faster, or keep the parallel deployment fetch (4 at a time) and fetch fewer historical runs per DAG.
 - **SLA clock:** in-process, no I/O; 15s stays cheap at 200.
 
-## Lagged warehouse check (optional)
+## Warehouse pipeline mart
 
-If you already materialize pipeline marts, use them as confirmation — they are not the live path.
+Live Airflow only sees deployments listed in config. If you already materialize pipeline status (the same table a mart-based console uses), InOrbit reads it and **merges** those rows: live Airflow wins on the same `dag_id`, the mart fills everything else.
 
 ```sql
 -- replace database / product ids from your warehouse
 select dag_id, astro_url, astro_deployment_name, dag_status,
-       dag_freshness_status, last_successful_at
+       dag_freshness_status, dag_last_successful_run_at
 from {OBSERVABILITY_DB}.MARTS.PIPELINE_STATUS
 where lower(coalesce(data_product_name, data_product_id)) in ('alpha', 'beta')
 order by data_product_name, is_primary_dag desc, dag_id;
