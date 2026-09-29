@@ -65,6 +65,9 @@ func Mount(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/", http.StatusFound)
 			return
 		}
+		if p == "/" || strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		ui.ServeHTTP(w, r)
 	})
 }

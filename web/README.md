@@ -2,7 +2,7 @@
 
 Local test console. Same role as Rill’s [`web-local`](https://github.com/rilldata/rill/tree/main/web-local): source assets live here; production copies them into `internal/web/embed/dist` and the Go binary embeds that tree (`internal/web`, same idea as Rill [`cli/pkg/web`](https://github.com/rilldata/rill/blob/main/cli/pkg/web/handler.go)).
 
-Theme and controls use a simple masthead, product cards, and Overview / Pipeline / Quality / Lineage. Freshness is part of Pipeline, not a separate tab. Lineage reads the warehouse mart. The page only calls `/v1`.
+Theme follows [PatternFly 5](https://www.patternfly.org/): white page, rounded product cards, search and pill filters, grid or list. Product pages show a primary-DAG Pipeline & Freshness strip, then a composite health scoreboard (donut, 7d/30d/3m/All trend, rule counts). Catalog chips show the numeric score for every status. Tabs stay Overview · Pipeline · Quality · Lineage. Freshness is part of Pipeline. The page only calls `/v1`.
 
 ```bash
 make ui.prepare   # copy web/ → internal/web/embed/dist

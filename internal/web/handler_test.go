@@ -99,6 +99,27 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "warehouse pipeline mart") {
 		t.Fatal("ui js missing pipeline mart empty hint")
 	}
+	if !strings.Contains(rec.Body.String(), "io-grid") || !strings.Contains(rec.Body.String(), "io-card") {
+		t.Fatal("ui js missing catalog card grid")
+	}
+	if !strings.Contains(rec.Body.String(), "Search by name") || !strings.Contains(rec.Body.String(), "io-pill") {
+		t.Fatal("ui js missing catalog search or type pills")
+	}
+	if !strings.Contains(rec.Body.String(), "Data Products") || !strings.Contains(rec.Body.String(), "data-csv") {
+		t.Fatal("ui js missing catalog title or CSV export")
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("ui js should not be cached by the browser")
+	}
+	if !strings.Contains(rec.Body.String(), `aria-label="Product sections"`) {
+		t.Fatal("ui js missing product tablist")
+	}
+	if !strings.Contains(rec.Body.String(), "Primary Pipeline") || !strings.Contains(rec.Body.String(), "data-rel-window") {
+		t.Fatal("ui js missing primary DAG pipeline and freshness strip")
+	}
+	if !strings.Contains(rec.Body.String(), "Composite Score across all dimensions") || !strings.Contains(rec.Body.String(), "data-trend-window") {
+		t.Fatal("ui js missing overview health scoreboard")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/meta", nil))
