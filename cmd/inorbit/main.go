@@ -51,7 +51,7 @@ func main() {
 	clockSec := flag.Int("clock-seconds", 15, "SLA clock tick (no I/O)")
 	astroSec := flag.Int("astro-run-seconds", 90, "Airflow latest-run poll")
 	tagSec := flag.Int("astro-tag-seconds", 600, "Airflow DAG-tag poll")
-	qualitySec := flag.Int("quality-seconds", 120, "quality / dbt watermark poll")
+	qualitySec := flag.Int("quality-seconds", 300, "quality / dbt watermark poll (dbt follows the pipeline, default 5m)")
 	flag.Parse()
 
 	lg := log.New(os.Stdout, "inorbit ", log.LstdFlags)

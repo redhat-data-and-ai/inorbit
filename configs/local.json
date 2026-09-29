@@ -4,7 +4,7 @@
   "clock_interval_seconds": 15,
   "astro_run_poll_seconds": 90,
   "astro_tag_poll_seconds": 600,
-  "quality_poll_seconds": 120,
+  "quality_poll_seconds": 300,
   "snowflake": {
     "account": "example",
     "database": "catalog_db",

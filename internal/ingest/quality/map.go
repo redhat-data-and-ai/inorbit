@@ -289,7 +289,19 @@ func KeepLatestRun(rows []map[string]any, timeKeys, idKeys []string) []map[strin
 		}
 	}
 	if bestID == "" {
-		return rows
+		if best.IsZero() {
+			return rows
+		}
+		out := make([]map[string]any, 0)
+		for _, rec := range rows {
+			if asTime(recGet(rec, timeKeys...)).Equal(best) {
+				out = append(out, rec)
+			}
+		}
+		if len(out) == 0 {
+			return rows
+		}
+		return out
 	}
 	out := make([]map[string]any, 0)
 	for _, rec := range rows {

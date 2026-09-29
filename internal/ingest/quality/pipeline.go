@@ -9,7 +9,7 @@ import (
 
 // PipelineRows loads MARTS.PIPELINE_STATUS (or the configured table). Missing objects are skipped.
 func (s *Snowflake) PipelineRows(ctx context.Context, table domain.QualityTable) ([]map[string]any, error) {
-	if s == nil || s.sess == nil {
+	if !s.ready() {
 		return nil, fmt.Errorf("snowflake client is nil")
 	}
 	if !table.Enabled {

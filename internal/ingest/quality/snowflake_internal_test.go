@@ -41,6 +41,21 @@ func TestMissingRelationCache(t *testing.T) {
 	}
 }
 
+func TestIsSchemaMismatch(t *testing.T) {
+	if !isBadIdentifier(fmt.Errorf("000904 (22023): SQL compilation error: invalid identifier 'RUN_ID'")) {
+		t.Fatal("expected invalid identifier")
+	}
+	if !isSchemaMismatch(fmt.Errorf("000904 (22023): SQL compilation error: invalid identifier 'RUN_ID'")) {
+		t.Fatal("expected schema mismatch")
+	}
+	if isSchemaMismatch(fmt.Errorf("002003 (02000): Schema 'ALPHA_DB.QUALITY' does not exist or not authorized.")) {
+		t.Fatal("missing object is not a schema mismatch")
+	}
+	if isSchemaMismatch(fmt.Errorf("timeout waiting for warehouse")) {
+		t.Fatal("timeout is not a schema mismatch")
+	}
+}
+
 func TestMissingObjectLogWriterDrops002003(t *testing.T) {
 	var buf strings.Builder
 	w := missingObjectLogWriter{w: &buf}
@@ -56,5 +71,12 @@ func TestMissingObjectLogWriterDrops002003(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "authentication timed out") {
 		t.Fatalf("kept log %q", buf.String())
+	}
+	buf.Reset()
+	if _, err := w.Write([]byte("ERRO[1] 000904 (22023): SQL compilation error: error line 1 at position 8 invalid identifier 'RUN_ID'\n")); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected drop invalid identifier, got %q", buf.String())
 	}
 }

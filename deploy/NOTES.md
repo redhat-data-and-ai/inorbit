@@ -19,6 +19,6 @@ Poll flags (or env later):
 - -clock-seconds=15
 - -astro-run-seconds=90
 - -astro-tag-seconds=600
-- -quality-seconds=120
+- -quality-seconds=300
 
 Local first: `make run` (demo). Do not deploy until live ingest against Airflow and the warehouse is tested from a workstation.

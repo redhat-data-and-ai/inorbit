@@ -1,6 +1,7 @@
 package quality_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/inorbit/inorbit/internal/domain"
@@ -64,5 +65,21 @@ func TestValidationCheckLatestRun(t *testing.T) {
 	got := quality.KeepLatestRun(rows, []string{"RUN_TIME"}, []string{"RUN_ID"})
 	if len(got) != 2 {
 		t.Fatalf("got %d", len(got))
+	}
+	ids := map[string]bool{}
+	for _, rec := range got {
+		ids[fmt.Sprint(rec["RUN_ID"])] = true
+	}
+	if !ids["new"] || ids["old"] {
+		t.Fatalf("expected only latest run_id, got %+v", got)
+	}
+	noID := []map[string]any{
+		{"RUN_TIME": "2026-01-01T00:00:00Z", "NAME": "old"},
+		{"RUN_TIME": "2026-09-01T00:00:00Z", "NAME": "a"},
+		{"RUN_TIME": "2026-09-01T00:00:00Z", "NAME": "b"},
+	}
+	latest := quality.KeepLatestRun(noID, []string{"RUN_TIME"}, []string{"RUN_ID"})
+	if len(latest) != 2 {
+		t.Fatalf("timestamp fallback got %d", len(latest))
 	}
 }
