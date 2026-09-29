@@ -22,6 +22,10 @@ var identRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 var quietDriverOnce sync.Once
 
+// qualityFetchConc is how many warehouse products we query at once after SSO.
+// dbt tests follow the pipeline, so wall time matters more than poll frequency.
+const qualityFetchConc = 8
+
 type Snowflake struct {
 	DB      *sql.DB
 	sess    *sql.Conn
@@ -58,8 +62,7 @@ func Open(c ConnConfig) (*Snowflake, error) {
 		Database:  pick(c.Database, "SNOWFLAKE_DATABASE"),
 		Params:    map[string]*string{"client_session_keep_alive": &keepAlive},
 		// Same as dbt/snowflake-connector: cache the SSO ID token in the OS
-		// keychain so a later process can skip the browser. This process also
-		// pins one sql.Conn so polls do not open a new session (and a new tab).
+		// keychain so extra pool connections reuse it (no extra browser tabs).
 		ClientStoreTemporaryCredential: sf.ConfigBoolTrue,
 		ClientRequestMfaToken:          sf.ConfigBoolTrue,
 		ExternalBrowserTimeout:         5 * time.Minute,
@@ -108,6 +111,16 @@ func Open(c ConnConfig) (*Snowflake, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := sess.PingContext(context.Background()); err != nil {
+		_ = sess.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	// Keep the first Conn so the SSO session stays warm. Raise the pool so
+	// LatestChecks can run qualityFetchConc queries on other connections that
+	// reuse the cached ID token.
+	db.SetMaxOpenConns(qualityFetchConc + 1)
+	db.SetMaxIdleConns(qualityFetchConc + 1)
 	return &Snowflake{DB: db, sess: sess, missing: map[string]bool{}}, nil
 }
 
@@ -196,21 +209,56 @@ func (s *Snowflake) Close() error {
 	return err
 }
 
-// LatestChecks loads the newest validation run and newest dbt/Elementary invocation per product.
+func (s *Snowflake) ready() bool {
+	return s != nil && s.DB != nil
+}
+
+// LatestChecks loads the newest validation RUN_ID and newest dbt/Elementary invocation per product.
 // Missing warehouse objects are skipped, not treated as ingest errors.
 func (s *Snowflake) LatestChecks(ctx context.Context, products []domain.DataProduct) (checks []domain.Check, sources map[string]domain.QualitySources, err error) {
-	if s == nil || s.sess == nil {
+	if !s.ready() {
 		return nil, nil, fmt.Errorf("snowflake client is nil")
 	}
 	sources = make(map[string]domain.QualitySources, len(products))
-	var errs []string
+	if len(products) == 0 {
+		return nil, sources, nil
+	}
+	type result struct {
+		id     string
+		checks []domain.Check
+		src    domain.QualitySources
+		err    error
+	}
+	ch := make(chan result, len(products))
+	sem := make(chan struct{}, qualityFetchConc)
+	var wg sync.WaitGroup
 	for _, p := range products {
-		got, src, perr := s.productChecks(ctx, p)
-		sources[p.ID] = src
-		if perr != nil {
-			errs = append(errs, p.ID+": "+perr.Error())
+		p := p
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				ch <- result{id: p.ID, err: ctx.Err()}
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+			got, src, perr := s.productChecks(ctx, p)
+			ch <- result{id: p.ID, checks: got, src: src, err: perr}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	var errs []string
+	for res := range ch {
+		sources[res.id] = res.src
+		if res.err != nil {
+			errs = append(errs, res.id+": "+res.err.Error())
 		}
-		checks = append(checks, got...)
+		checks = append(checks, res.checks...)
 	}
 	if len(errs) == len(products) && len(checks) == 0 && len(products) > 0 {
 		return checks, sources, fmt.Errorf("quality ingest: %s", strings.Join(errs, "; "))
@@ -243,18 +291,22 @@ func (s *Snowflake) productChecks(ctx context.Context, p domain.DataProduct) ([]
 		} else {
 			src.Validation = domain.QualitySource{Status: domain.QualityOK, Relation: rel}
 			vxSQL := `
-with latest as (
+with staged as (
+  select * from ` + rel + `
+),
+latest as (
   select run_id
-  from ` + rel + `
+  from staged
   qualify row_number() over (order by run_time desc nulls last) = 1
 )
-select vr.*
-from ` + rel + ` vr
-inner join latest on latest.run_id = vr.run_id`
-			vx, err := s.query(ctx, vxSQL)
+select s.*
+from staged s
+inner join latest l on s.run_id = l.run_id`
+			vx, err := s.latestRows(ctx, rel, vxSQL, func(rows []map[string]any) []map[string]any {
+				return KeepLatestRun(rows, []string{"RUN_TIME", "CREATED_AT", "UPDATED_AT", "EXECUTED_AT"}, []string{"RUN_ID"})
+			})
 			if err != nil {
 				if isMissingObject(err) {
-					s.markMissing(rel)
 					src.Validation.Status = domain.QualityMissing
 				} else {
 					errs = append(errs, "validation: "+err.Error())
@@ -291,29 +343,14 @@ latest as (
 select s.*
 from staged s
 inner join latest l on coalesce(s.invocation_id, s.test_execution_id) = l.invocation_key`
-			dbt, err := s.query(ctx, dbtSQL)
+			dbt, err := s.latestRows(ctx, rel, dbtSQL, func(rows []map[string]any) []map[string]any {
+				return KeepLatestRun(rows, []string{"DETECTED_AT", "GENERATED_AT", "CREATED_AT"}, []string{"INVOCATION_ID", "TEST_EXECUTION_ID"})
+			})
 			if err != nil {
 				if isMissingObject(err) {
-					s.markMissing(rel)
 					src.DBT.Status = domain.QualityMissing
 				} else {
-					fallback, ferr := s.query(ctx, "select * from "+rel+" limit 4000")
-					if ferr != nil {
-						if isMissingObject(ferr) {
-							s.markMissing(rel)
-							src.DBT.Status = domain.QualityMissing
-						} else {
-							errs = append(errs, "dbt: "+err.Error())
-						}
-					} else {
-						fallback = KeepLatestRun(fallback, []string{"DETECTED_AT", "GENERATED_AT", "CREATED_AT"}, []string{"INVOCATION_ID", "TEST_EXECUTION_ID"})
-						for _, rec := range fallback {
-							stripSensitive(rec)
-							if c, ok := DBTCheck(p, rec); ok {
-								out = append(out, c)
-							}
-						}
-					}
+					errs = append(errs, "dbt: "+err.Error())
 				}
 			} else {
 				for _, rec := range dbt {
@@ -348,11 +385,37 @@ func isMissingObject(err error) bool {
 	return isMissingObjectLog(err.Error())
 }
 
+func isBadIdentifier(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "000904") || strings.Contains(s, "invalid identifier")
+}
+
+func isSchemaMismatch(err error) bool {
+	if isBadIdentifier(err) {
+		return true
+	}
+	if err == nil || isMissingObject(err) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "sql compilation error")
+}
+
 func isMissingObjectLog(s string) bool {
 	s = strings.ToLower(s)
 	return strings.Contains(s, "002003") ||
 		strings.Contains(s, "does not exist") ||
 		strings.Contains(s, "object does not exist")
+}
+
+func isNoisyDriverLog(s string) bool {
+	if isMissingObjectLog(s) {
+		return true
+	}
+	l := strings.ToLower(s)
+	return strings.Contains(l, "invalid identifier")
 }
 
 func (s *Snowflake) knownMissing(rel string) bool {
@@ -377,7 +440,8 @@ func (s *Snowflake) markMissing(rel string) {
 }
 
 // quietMissingObjectDriverLogs drops gosnowflake ERRO lines for 002003 (schema/table
-// missing). InOrbit already treats those as skipped sources; the driver logs first.
+// missing) and 000904 invalid identifier (tables without RUN_ID). InOrbit
+// already treats those as skipped sources or a fallback scan; the driver logs first.
 func quietMissingObjectDriverLogs() {
 	quietDriverOnce.Do(func() {
 		sf.GetLogger().SetOutput(missingObjectLogWriter{w: os.Stderr})
@@ -389,7 +453,7 @@ type missingObjectLogWriter struct {
 }
 
 func (m missingObjectLogWriter) Write(p []byte) (int, error) {
-	if isMissingObjectLog(string(p)) {
+	if isNoisyDriverLog(string(p)) {
 		return len(p), nil
 	}
 	if m.w == nil {
@@ -398,13 +462,39 @@ func (m missingObjectLogWriter) Write(p []byte) (int, error) {
 	return m.w.Write(p)
 }
 
+func (s *Snowflake) latestRows(ctx context.Context, rel, preferred string, keep func([]map[string]any) []map[string]any) ([]map[string]any, error) {
+	rows, err := s.query(ctx, preferred)
+	if err == nil {
+		return rows, nil
+	}
+	if isMissingObject(err) {
+		s.markMissing(rel)
+		return nil, err
+	}
+	if !isSchemaMismatch(err) {
+		return nil, err
+	}
+	raw, ferr := s.query(ctx, "select * from "+rel+" limit 4000")
+	if ferr != nil {
+		if isMissingObject(ferr) {
+			s.markMissing(rel)
+			return nil, ferr
+		}
+		return nil, err
+	}
+	if keep == nil {
+		return raw, nil
+	}
+	return keep(raw), nil
+}
+
 func (s *Snowflake) query(ctx context.Context, q string) ([]map[string]any, error) {
-	if s == nil || s.sess == nil {
-		return nil, fmt.Errorf("snowflake session is nil")
+	if !s.ready() {
+		return nil, fmt.Errorf("snowflake client is nil")
 	}
 	// Keep the process context for shutdown, but do not inherit a poll timeout
 	// that cancels after success — that closes the SSO session.
-	rows, err := s.sess.QueryContext(withoutPollDeadline(ctx), q)
+	rows, err := s.DB.QueryContext(withoutPollDeadline(ctx), q)
 	if err != nil {
 		return nil, err
 	}

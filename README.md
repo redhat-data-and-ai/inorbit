@@ -161,7 +161,7 @@ Paused DAGs are kept when they are custom, primary, or SLA-tagged. Untagged paus
 
 ## Quality sources
 
-Live quality is per data product in config. Override `database`, `schema`, and `table` per product. Missing tables are skipped.
+Live quality is per data product in config. Override `database`, `schema`, and `table` per product. Missing tables are skipped. Validation keeps every row for the **latest `RUN_ID`**. dbt / Elementary keeps the **latest invocation**. Older runs are not shown.
 
 | Source | Default table | When |
 |---|---|---|
@@ -236,7 +236,7 @@ Opening a dashboard page does **not** start pollers. An expired UI cache only me
 | SLA clock | 15s | none |
 | Airflow latest runs | 90s | Airflow API per deployment |
 | Airflow DAG tags | 10 min | Airflow API |
-| Quality / dbt / marts | 2 min | Warehouse watermark (quality, lineage, pipeline mart) |
+| Quality / dbt / marts | 5 min | Warehouse watermark (quality, lineage, pipeline mart). dbt tests follow the pipeline, not this poll. |
 
 ## 200 data products (memory and speed)
 
@@ -248,12 +248,13 @@ Measured on a 40-product live catalog (14 Airflow deployments, HTTP up after ing
 |---|---|---|
 | Process RSS | **~49 MiB** | **~58 MiB** estimated (`/v1/meta`) |
 | Snapshot JSON | 656 KiB (~17 KiB/product) | ~3.2 MiB |
-| Airflow poll | **~4.5 min** sequential (4 heavy deployments ~60s each) | listing stays per-deployment; run fetches grow with matched DAGs |
-| Quality poll | **~40s** sequential Snowflake | **~3–4 min** if still one query per product |
+| Airflow poll | **~16–29s** (4 deployments at a time) | listing stays per-deployment; run fetches grow with matched DAGs |
+| Quality poll | **8 products at a time**; later passes ~20s at 40 products | stays behind the 5 min default; raise `-quality-seconds` if a poll overruns |
 | Lineage + pipeline marts | **~5s** together | stays one/two warehouse queries |
 
 - **Memory is not the limiter.** The 48 MiB process floor dominates; even 200 products stay well under 128 MiB.
-- **Time is the limiter.** Default `-astro-run-seconds 90` and `-quality-seconds 120` already overrun at 40 products. Raise them (5–10 min Airflow, 5 min quality) until polls are faster, or keep the parallel deployment fetch (4 at a time) and fetch fewer historical runs per DAG.
+- **Do not poll quality faster than dbt.** Tests land when the pipeline runs. Default `-quality-seconds 300` (5 min). Parallel warehouse queries make each poll short; a shorter interval only repeats the same watermark.
+- **Airflow:** default `-astro-run-seconds 90` is enough when deployments fetch in parallel. Raise it only if a poll overruns.
 - **SLA clock:** in-process, no I/O; 15s stays cheap at 200.
 
 ## Warehouse pipeline mart

@@ -5,4 +5,4 @@ http_addr: ":8080"
 clock_interval_seconds: 15
 astro_run_poll_seconds: 90
 astro_tag_poll_seconds: 600
-quality_poll_seconds: 120
+quality_poll_seconds: 300
