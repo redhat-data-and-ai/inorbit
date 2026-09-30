@@ -12,7 +12,8 @@ const state = {
   typeFilter: "all",
   listSort: "name",
   listView: "grid",
-  envFilter: "all",
+  envFilter: "production",
+  productEnv: "production",
   highImpact: false,
   noteDismissed: false,
   runFilter: "all",
@@ -28,6 +29,7 @@ const state = {
 };
 
 let lastRouteKey = "";
+let lastProductKey = "";
 let lastRenderedRoute = "";
 let dataSigCache = "";
 let filterTimer = 0;
@@ -618,9 +620,42 @@ function envRank(name) {
   return 0;
 }
 
-function envKind(s) {
+function dagEnv(d) {
+  const r = envRank(d && d.astro_deployment_name);
+  if (r === 3) return "production";
+  if (r === 2) return "preprod";
+  if (r === 1) return "sandbox";
+  return "unknown";
+}
+
+function envLabel(kind) {
+  if (kind === "production") return { text: "Production", kind: "production" };
+  if (kind === "preprod") return { text: "Pre Prod", kind: "preprod" };
+  if (kind === "sandbox") return { text: "Sandbox", kind: "sandbox" };
+  return { text: "Unknown", kind: "unknown" };
+}
+
+function pipelineForEnv(list, env) {
+  const rows = list || [];
+  if (!env || env === "all") return rows;
+  return rows.filter((d) => dagEnv(d) === env);
+}
+
+function snapEnvs(s) {
+  const seen = {};
+  (s.pipeline || []).forEach((d) => { seen[dagEnv(d)] = true; });
+  return ["production", "preprod", "sandbox", "unknown"].filter((k) => seen[k]).map(envLabel);
+}
+
+function hasEnv(s, env) {
+  if (!env || env === "all") return true;
+  return (s.pipeline || []).some((d) => dagEnv(d) === env);
+}
+
+function envKind(s, env) {
+  if (env && env !== "all") return envLabel(env);
   const names = (s.pipeline || []).map((d) => String(d.astro_deployment_name || "").trim()).filter(Boolean);
-  if (!names.length) return { text: "Unknown", kind: "unknown" };
+  if (!names.length) return envLabel("unknown");
   let best = names[0];
   let bestR = -1;
   names.forEach((n) => {
@@ -630,10 +665,31 @@ function envKind(s) {
       best = n;
     }
   });
-  if (bestR === 3) return { text: "Production", kind: "production" };
-  if (bestR === 2) return { text: "Pre Prod", kind: "preprod" };
-  if (bestR === 1) return { text: "Sandbox", kind: "sandbox" };
+  if (bestR === 3) return envLabel("production");
+  if (bestR === 2) return envLabel("preprod");
+  if (bestR === 1) return envLabel("sandbox");
   return { text: pretty(best) || "Unknown", kind: "unknown" };
+}
+
+function preferredProductEnv(snap) {
+  const kinds = snapEnvs(snap).map((e) => e.kind);
+  if (state.productEnv && kinds.includes(state.productEnv)) return state.productEnv;
+  if (kinds.includes("production")) return "production";
+  return kinds[0] || "production";
+}
+
+function scopedSnap(s, env) {
+  return Object.assign({}, s, { pipeline: pipelineForEnv(s.pipeline, env) });
+}
+
+function productEnvSelect(snap) {
+  const envs = snapEnvs(snap);
+  if (!envs.length) return "";
+  const cur = preferredProductEnv(snap);
+  return catalogSelect("product-env", "Environment", envs.map((e) => {
+    const n = pipelineForEnv(snap.pipeline, e.kind).length;
+    return [e.kind, e.text, n];
+  }), cur);
 }
 
 function csvCell(v) {
@@ -718,8 +774,7 @@ function filteredCatalog() {
     const t = String((s.data_product || {}).dp_type || "").toLowerCase();
     if (state.typeFilter === "aggregate" && t !== "aggregate") return false;
     if (state.typeFilter === "source-aligned" && t !== "source-aligned" && t !== "source") return false;
-    const env = envKind(s).kind;
-    if (state.envFilter !== "all" && env !== state.envFilter) return false;
+    if (state.envFilter !== "all" && !hasEnv(s, state.envFilter)) return false;
     if (state.highImpact && bucket !== "at_risk") return false;
     if (!q) return true;
     const p = s.data_product || {};
@@ -745,10 +800,10 @@ function downloadCatalogCSV() {
       p.data_product_name || "",
       p.data_product_id || "",
       typeKind(p.dp_type).text,
-      envKind(s).text,
+      envKind(s, state.envFilter).text,
       pretty(h.status),
       h.total_checks ? Math.round(Number(h.health_score) || 0) : "",
-      pipelineSummary(s.pipeline).label,
+      pipelineSummary(pipelineForEnv(s.pipeline, state.envFilter)).label,
       qualitySummary(s.quality, s.quality_sources).label,
       p.owner_team || "",
     ].map(csvCell).join(","));
@@ -815,6 +870,11 @@ function productHealthBucket(status) {
 }
 
 function resetViewState(route) {
+  const productKey = route.view + ":" + (route.id || "");
+  if (productKey !== lastProductKey) {
+    lastProductKey = productKey;
+    if (route.view === "detail") state.productEnv = "production";
+  }
   const key = route.view + ":" + (route.id || "") + ":" + (route.tab || "");
   if (key === lastRouteKey) return;
   lastRouteKey = key;
@@ -1053,15 +1113,21 @@ function renderList() {
     if (t === "aggregate") typeCounts.aggregate += 1;
     else if (t === "source-aligned" || t === "source") typeCounts["source-aligned"] += 1;
     else typeCounts.other += 1;
-    envCounts[envKind(s).kind] += 1;
+    const kinds = {};
+    (s.pipeline || []).forEach((d) => { kinds[dagEnv(d)] = true; });
+    Object.keys(kinds).forEach((k) => {
+      if (envCounts[k] != null) envCounts[k] += 1;
+    });
   });
+  const catalogEnv = state.envFilter || "production";
   const snaps = filteredCatalog();
   const cards = snaps.map((s) => {
     const p = s.data_product || {};
     const id = p.data_product_id;
+    const view = scopedSnap(s, catalogEnv);
     const h = s.health || {};
     const tp = typeKind(p.dp_type);
-    const env = envKind(s);
+    const env = envKind(s, catalogEnv);
     const href = `#/data-product/${encodeURIComponent(id)}`;
     const tone = healthClass(h.status);
     return `<a class="io-card tone-${tone}" href="${href}">
@@ -1069,7 +1135,7 @@ function renderList() {
         <h2 class="io-card-name">${esc(p.data_product_name || id)}</h2>
         ${healthChip(h)}
       </div>
-      ${catalogBlurbHTML(s)}
+      ${catalogBlurbHTML(view)}
       <div class="io-card-pills">
         <span class="io-pill io-pill-${tp.kind}">${esc(tp.text)}</span>
         <span class="io-pill io-pill-env-${env.kind}">${esc(env.text)}</span>
@@ -1079,16 +1145,17 @@ function renderList() {
   const rows = snaps.map((s) => {
     const p = s.data_product || {};
     const id = p.data_product_id;
+    const view = scopedSnap(s, catalogEnv);
     const h = s.health || {};
-    const f = s.freshness || {};
-    const pipe = pipelineSummary(s.pipeline);
+    const primary = primaryDAG(view.pipeline);
+    const pipe = pipelineSummary(view.pipeline);
     const qual = qualitySummary(s.quality, s.quality_sources);
     const href = `#/data-product/${encodeURIComponent(id)}`;
-    const age = f.current_delay_mins != null ? fmtSpan(f.current_delay_mins) : "—";
+    const age = primary && primary.dag_data_age_mins != null ? fmtSpan(primary.dag_data_age_mins) : "—";
     return `<tr class="io-row" data-href="${href}">
       <td><a class="io-product-name" href="${href}">${esc(p.data_product_name || id)}</a></td>
       <td>${esc(typeKind(p.dp_type).text)}</td>
-      <td>${esc(envKind(s).text)}</td>
+      <td>${esc(envKind(s, catalogEnv).text)}</td>
       <td>${healthChip(h)}</td>
       <td>${esc(pipe.label)}</td>
       <td>${esc(qual.label)}<div class="muted-cell">${esc(qual.detail)}</div></td>
@@ -1126,10 +1193,10 @@ function renderList() {
           <button type="button" class="io-search-clear" data-clear-search aria-label="Clear search"${state.filter ? "" : " hidden"}>×</button>
         </label>
         ${catalogSelect("env-filter", "Environment", [
-          ["all", "Environment", all.length],
           ["production", "Production", envCounts.production],
           ["preprod", "Pre Prod", envCounts.preprod],
           ["sandbox", "Sandbox", envCounts.sandbox],
+          ["all", "All", all.length],
         ], state.envFilter)}
         ${catalogSelect("type-filter", "Type", [
           ["all", "Type", all.length],
@@ -1295,6 +1362,9 @@ function renderDetail(route) {
   if (!snap) {
     return `<section class="pf-v5-c-page__main-section"><p class="error">Data product not found: ${esc(route.id)}</p><p><a class="pf-v5-c-button pf-m-link" href="#/">Back to data products</a></p></section>`;
   }
+  const env = preferredProductEnv(snap);
+  state.productEnv = env;
+  const view = scopedSnap(snap, env);
   const p = snap.data_product;
   const tab = route.tab;
   const base = `#/data-product/${encodeURIComponent(route.id)}`;
@@ -1317,7 +1387,7 @@ function renderDetail(route) {
   let body = "";
   if (tab === "pipeline") {
     const q = state.tableFilter.trim().toLowerCase();
-    const all = sortDAGs(snap.pipeline);
+    const all = sortDAGs(view.pipeline);
     const failed = all.filter((d) => dagRunBucket(d) === "failed").length;
     const running = all.filter((d) => dagRunBucket(d) === "running").length;
     const paused = all.filter((d) => dagRunBucket(d) === "paused").length;
@@ -1354,7 +1424,7 @@ function renderDetail(route) {
       : emptyRow(cols, "No DAGs match these filters.", "Clear the run or SLA chips, or the search box.");
     const customCount = all.filter((d) => d.dag_is_custom).length;
     body = `
-      ${primaryFreshnessHTML(snap, base)}
+      ${primaryFreshnessHTML(view, base)}
       <div class="io-stat-row">
         <div class="io-stat"><strong>${all.length}</strong><span>DAGs</span></div>
         <div class="io-stat"><strong>${failed}</strong><span>Failed</span></div>
@@ -1472,9 +1542,9 @@ function renderDetail(route) {
     const cls = healthClass(h.status);
     const trend = state.trends[route.id] || [];
     body = `
-      ${primaryFreshnessHTML(snap, base)}
+      ${primaryFreshnessHTML(view, base)}
       ${overviewCharts(snap, trend)}
-      ${tilesHTML(snap, base)}
+      ${tilesHTML(view, base)}
       <div class="pf-v5-c-alert pf-m-inline ${cls === "bad" ? "pf-m-danger" : cls === "warn" ? "pf-m-warning" : "pf-m-info"} msg ${cls}">
         <h4 class="pf-v5-c-alert__title">${esc(h.status_message || f.status_reason || "No status message")}</h4>
       </div>
@@ -1491,6 +1561,7 @@ function renderDetail(route) {
       <div class="io-title-row title-row">
         <h1 class="pf-v5-c-title pf-m-2xl">${esc(p.data_product_name || p.data_product_id)}</h1>
         ${healthChip(snap.health || {})}
+        ${productEnvSelect(snap)}
       </div>
       <p class="io-lede">${esc(pretty(p.dp_type) || "")}${p.owner_team ? " · " + esc(p.owner_team) : ""}</p>
       ${fetchBanner("Updated " + updatedRel)}
@@ -1612,6 +1683,7 @@ function bindApp() {
     if (id === "health-filter") state.healthFilter = e.target.value;
     else if (id === "type-filter") state.typeFilter = e.target.value;
     else if (id === "env-filter") state.envFilter = e.target.value;
+    else if (id === "product-env") state.productEnv = e.target.value;
     else if (id === "list-sort") state.listSort = e.target.value;
     else return;
     render();

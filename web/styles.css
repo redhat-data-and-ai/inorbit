@@ -281,6 +281,7 @@ body {
   gap: 12px;
 }
 .io-title-row h1 { margin: 0; }
+.io-title-row .io-catalog-select { margin-left: auto; }
 .pf-v5-c-label { font-size: 12px; }
 
 .io-kpis {
