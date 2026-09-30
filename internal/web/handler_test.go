@@ -120,6 +120,9 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Composite Score across all dimensions") || !strings.Contains(rec.Body.String(), "data-trend-window") {
 		t.Fatal("ui js missing overview health scoreboard")
 	}
+	if !strings.Contains(rec.Body.String(), `catalogSelect("product-env"`) || !strings.Contains(rec.Body.String(), `envFilter: "production"`) {
+		t.Fatal("ui js missing product environment filter defaulting to production")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/meta", nil))
