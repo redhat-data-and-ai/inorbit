@@ -34,6 +34,7 @@ func (e *Engine) Recompute(now time.Time) {
 		}
 
 		pipe := make([]domain.PipelineStatus, 0, len(dags))
+		hasProd := pipeline.HasProduction(dags)
 		for _, dag := range dags {
 			pipeline.EnrichDAG(&dag)
 			ev := pipeline.Tick(dag, now)
@@ -47,7 +48,7 @@ func (e *Engine) Recompute(now time.Time) {
 				ComputedAt:                  now,
 			}
 			pipe = append(pipe, ps)
-			if !dag.IsCustom {
+			if pipeline.ScoreDAG(dag, hasProd) {
 				checks = append(checks, virtualChecks(dp, dag, ev, now)...)
 			}
 		}
@@ -94,7 +95,7 @@ func virtualChecks(dp domain.DataProduct, dag domain.DAG, ev pipeline.DAGEval, n
 		}
 		failAt := now
 		out = append(out, domain.Check{
-			ID:              fmt.Sprintf("%s:%s:freshness", dp.ID, dag.DAGID),
+			ID:              fmt.Sprintf("%s:%s:%s:freshness", dp.ID, dag.DeploymentName, dag.DAGID),
 			DataProductID:   dp.ID,
 			DataProductName: dp.Name,
 			Name:            "Astro freshness " + dag.DAGID,
@@ -113,7 +114,7 @@ func virtualChecks(dp domain.DataProduct, dag domain.DAG, ev pipeline.DAGEval, n
 			failAt = *dag.CompletedAt
 		}
 		out = append(out, domain.Check{
-			ID:              fmt.Sprintf("%s:%s:pipeline", dp.ID, dag.DAGID),
+			ID:              fmt.Sprintf("%s:%s:%s:pipeline", dp.ID, dag.DeploymentName, dag.DAGID),
 			DataProductID:   dp.ID,
 			DataProductName: dp.Name,
 			Name:            "Astro pipeline " + dag.DAGID,
