@@ -1,6 +1,6 @@
 # InOrbit
 
-**Live observability for data products.** One Go process polls Airflow and warehouse checks, scores health in memory, and serves the dashboard and Slack from that snapshot — not from a warehouse round-trip on every click.
+**Live observability for data products.** One Go process polls Airflow, Fivetran, and warehouse checks, scores health in memory, and serves the dashboard and Slack from that snapshot — not from a warehouse round-trip on every click.
 
 The catalog is JSON. Add a product, a deployment, or a quality table without touching Go. The binary has no built-in product list.
 
@@ -8,6 +8,7 @@ The catalog is JSON. Add a product, a deployment, or a quality table without tou
 flowchart LR
   subgraph sources [Sources]
     AF[Airflow]
+    FT[Fivetran]
     Q[Validation + dbt]
     L[Lineage mart]
     P[Pipeline mart]
@@ -18,6 +19,7 @@ flowchart LR
     E[Health + SLA]
   end
   AF --> S
+  FT --> S
   Q --> S
   L --> S
   P --> S
@@ -35,9 +37,9 @@ Warehouse models stay for history, lineage, and pipeline fill. Clicks still read
 | Surface | What it answers |
 |---|---|
 | **Health** | One score per product. Failed checks deduct; unknown dimensions weigh 0; SLA age still counts. |
-| **Pipeline** | Active DAGs only: status, SLA, last/next run, timing, 7/30/90d reliability, **Open in Astro**. Freshness lives here — same table, not a second tab. |
+| **Pipeline** | Active DAGs: status, SLA, last/next run, timing, 7/30/90d reliability, **Open in Astro**. Source-aligned products also note Fivetran connector count. Freshness lives here — same table, not a second tab. |
 | **Quality** | Latest validation and dbt / Elementary results, aggregated into the snapshot (not a copy of every warehouse row). |
-| **Lineage** | Upstream sources and downstream consumers from `{observability_db}.MARTS.DP_LINEAGE`. Warehouse mart, not a live Airflow poll. |
+| **Lineage** | Upstream sources and downstream consumers from `{observability_db}.MARTS.DP_LINEAGE`. Source-aligned Fivetran chips show connector type, connection count, and paused state. Warehouse mart, not a live Airflow poll. |
 | **Alerts** | Subscribe a Slack channel per product and audience. Alerts follow the same snapshot with the UI closed. |
 
 Custom / ad-hoc DAGs stay visible. They are **not scored** and do not drive product SLA age.
@@ -113,6 +115,7 @@ cp configs/live.example.json configs/live.json
 | `SNOWFLAKE_PASSWORD` | Password auth |
 | `SNOWFLAKE_PRIVATE_KEY_PATH` or `SNOWFLAKE_PRIVATE_KEY` | JWT key file or PEM |
 | `SNOWFLAKE_ACCOUNT` / `SNOWFLAKE_ROLE` / `SNOWFLAKE_WAREHOUSE` | Overrides if omitted from `live.json` |
+| `FIVETRAN_API_KEY` / `FIVETRAN_API_SECRET` | Fivetran REST Basic auth for source-aligned connectors |
 
 ```bash
 export ASTRO_TOKEN=...
@@ -137,8 +140,8 @@ curl -s localhost:8080/v1/data-products/<your-id>/pipeline | python3 -m json.too
 ### Is it actually live?
 
 1. `GET /v1/meta` — `mode` is `live`, `last_astro_run_poll` is within ~90s, `data_product_count` matches `data_products` in config.
-2. Open each product → **Pipeline**. You should see DAGs from listed Airflow deployments **and** from the warehouse pipeline mart for catalog products those deployments do not return.
-3. Click **Open in Astro**. Last success should match InOrbit’s `last_successful_at` (seconds-level) on live rows; mart `astro_url` is passed through from the warehouse.
+2. Open each product → **Pipeline**. You should see DAGs from listed Airflow deployments **and** warehouse pipeline-mart rows for catalog products those APIs do not return. Source-aligned products show a connector count that links to Lineage.
+3. Click **Open in Astro** on a DAG row. Last success should match InOrbit’s `last_successful_at` (seconds-level) on live rows; mart `astro_url` is passed through from the warehouse. Source-aligned Lineage chips should show connector type instead of a generic `fivetran_db` label.
 4. Quality tables in that product’s `quality` block should match the Quality tab. Missing objects are skipped (0 rows).
 
 Marts lag and may filter paused/stage DAGs. Use them as lagged confirmation, not as the live source of truth.
@@ -155,6 +158,20 @@ Matching is deterministic. First hit wins:
 
 Tokens split on non-alphanumerics, so `dbt_payments_daily` matches `payments`, and a bare `daily` DAG does **not** attach to a product named `inorbit`. Hyphens and underscores are ignored in tags and ids.
 
+## How a Fivetran connector finds a product
+
+Live Fivetran is the REST API (`GET /v1/groups` then connections per destination), not the warehouse log connector. Only **source-aligned** products auto-match. First hit wins:
+
+1. Explicit `fivetran_connector_ids` on the product (any type; always pinned)
+2. Destination **schema** equal to the product id/name (longest wins; `schema.table` uses the first token)
+3. Connector **service** equal to the product id/name
+
+The destination/group name is the environment (`prod`, `stage`, …) so Production and Pre Prod stay split. Sync frequency becomes the expected interval; SLA is 25% of that interval, minimum 30 minutes — same clock as DAGs. Failed or overdue syncs create the same freshness/pipeline virtual checks. Stage connectors are not scored when a production connector exists.
+
+Connectors are **not** Pipeline DAG rows. Source-aligned Pipeline notes how many connectors the product has; Lineage upstream chips group by destination schema and connector type (logo mark, type name, connection count, and a Paused chip when any connection is paused). Snowpipe and external-table nodes stay generic. Aggregate products keep warehouse `fivetran_db` chips unchanged.
+
+Put `FIVETRAN_API_KEY` and `FIVETRAN_API_SECRET` in `.env` (gitignored). Optional `fivetran.group_ids` in config limits which destinations are polled. Connector dashboard URLs use `{dashboard_url}/{connection_id}` (default `https://fivetran.com/dashboard/connections`).
+
 Paused DAGs are kept when they are custom, primary, or SLA-tagged. Untagged paused DAGs and rows with no status, last run, or next run are dropped unless they are custom.
 
 **SLA** comes from DAG tags (`sla:interval_mins`, `sla:threshold_mins`, `sla:frequency_display`). If the threshold is missing, InOrbit uses 25% of the expected interval, minimum 30 minutes. Interval can fall back from cron / `@daily`. Ages and intervals render as minutes, hours, or days — not `—` when the clock knows the span.
@@ -168,15 +185,15 @@ Live quality is per data product in config. Override `database`, `schema`, and `
 | Validation | `{database}.QUALITY.VALIDATION_RESULT` | `quality.validation.enabled` |
 | dbt / Elementary | `{database}.DBTLOGS.ELEMENTARY_TEST_RESULTS` | `quality.dbt.enabled` |
 
-Health Score v2 is computed in process: only `FAILED` deducts, `UNKNOWN` dimensions have weight 0, coverage caps apply, and Astro freshness/pipeline virtual checks still contribute (except custom DAGs).
+Health Score v2 is computed in process: only `FAILED` deducts, `UNKNOWN` dimensions have weight 0, coverage caps apply, and Astro / Fivetran freshness/pipeline virtual checks still contribute (except custom DAGs).
 
 ## Lineage (warehouse mart)
 
-The Lineage tab is **not** live. It reads `{observability_db}.MARTS.DP_LINEAGE` (override with the `lineage` block in config): upstream sources, downstream consumers, blast radius, and neighbor health. In demo mode the same shape is in `demo.lineage`.
+The Lineage tab is **not** live. It reads `{observability_db}.MARTS.DP_LINEAGE` (override with the `lineage` block in config): upstream sources, downstream consumers, blast radius, and neighbor health. In demo mode the same shape is in `demo.lineage`. For source-aligned products, live Fivetran connections replace generic `fivetran_db` chips with one node per (schema, connector type).
 
-**Pipeline** prefers live Airflow for dag_ids returned by `astro.deployments`. Catalog products with no match there are filled from `{observability_db}.MARTS.PIPELINE_STATUS` (override with the `pipeline` block; defaults to the same database/schema as lineage). List every Airflow deployment you want live; the mart covers the rest without putting hostnames in Go.
+**Pipeline** prefers live Airflow for dag_ids returned by `astro.deployments`. Catalog products with no match there are filled from `{observability_db}.MARTS.PIPELINE_STATUS` (override with the `pipeline` block; defaults to the same database/schema as lineage). List every Airflow deployment you want live; the mart covers the rest without putting hostnames in Go. Live Fivetran is scored with the same clock as DAGs but rendered on Lineage, not as extra DAG rows.
 
-Add **your** products under `data_products` in `configs/live.json` (gitignored). Include both `aggregate` and `source-aligned` types; the homepage filters by type. Matching still uses tags, `dag_ids`, and dag_id tokens.
+Add **your** products under `data_products` in `configs/live.json` (gitignored). Include both `aggregate` and `source-aligned` types; the homepage filters by type. Matching still uses tags, `dag_ids`, and dag_id tokens. Source-aligned products also match Fivetran by destination schema, connector service, or explicit `fivetran_connector_ids`.
 
 ```bash
 curl -s localhost:8080/v1/data-products/alpha/lineage | python3 -m json.tool | head
@@ -219,8 +236,10 @@ InOrbit is a small loop: **ingest → snapshot → evaluate → serve**. Each pi
 | Poll another Airflow deployment | `astro.deployments` |
 | Fill Pipeline from the warehouse mart | `pipeline` table (defaults to `MARTS.PIPELINE_STATUS`) |
 | Pin DAGs that tags miss | `dag_ids` on the product |
+| Poll Fivetran for source-aligned products | `fivetran` block + `FIVETRAN_API_KEY` / `FIVETRAN_API_SECRET` |
+| Pin connectors that schema match misses | `fivetran_connector_ids` on the product |
 | Point at different quality tables | `quality.validation` / `quality.dbt` per product |
-| Demo a failure mode locally | `demo.dags` / `demo.checks` in `configs/demo.json` |
+| Demo a failure mode locally | `demo.dags` / `demo.checks` / `demo.connectors` in `configs/demo.json` |
 | Slow down or speed up polls | `-astro-run-seconds`, `-astro-tag-seconds`, `-quality-seconds`, `-clock-seconds` |
 | Swap the UI | anything that reads `/v1` (or delete `web.Mount`) |
 | Add a new live source later | new ingest package that upserts the same snapshot |
@@ -235,6 +254,7 @@ Opening a dashboard page does **not** start pollers. An expired UI cache only me
 |---|---|---|
 | SLA clock | 15s | none |
 | Airflow latest runs | 90s | Airflow API per deployment |
+| Fivetran connectors | 90s | Fivetran REST (same ticker as Airflow runs) |
 | Airflow DAG tags | 10 min | Airflow API |
 | Quality / dbt / marts | 5 min | Warehouse watermark (quality, lineage, pipeline mart). dbt tests follow the pipeline, not this poll. |
 
@@ -259,7 +279,7 @@ Measured on a 40-product live catalog (14 Airflow deployments, HTTP up after ing
 
 ## Warehouse pipeline mart
 
-Live Airflow only sees deployments listed in config. If you already materialize pipeline status (the same table a mart-based console uses), InOrbit reads it and **merges** those rows: live Airflow wins on the same `dag_id`, the mart fills everything else.
+Live Airflow only sees deployments listed in config. If you already materialize pipeline status (the same table a mart-based console uses), InOrbit reads it and **merges** those rows: live Airflow and Fivetran win on the same identity, the mart fills everything else.
 
 ```sql
 -- replace database / product ids from your warehouse
