@@ -26,7 +26,7 @@ func TestLoadExpandsEnvAndSkipsEmptyURLs(t *testing.T) {
   },
   "data_products": [
     {"id": "alpha", "name": "alpha", "dag_ids": ["alpha_hourly"]},
-    {"id": "beta", "name": "beta"}
+    {"id": "beta", "name": "beta", "fivetran_connector_ids": ["conn-orders"]}
   ]
 }`
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -48,6 +48,9 @@ func TestLoadExpandsEnvAndSkipsEmptyURLs(t *testing.T) {
 	}
 	if cfg.DAGMap()["alpha_hourly"] != "alpha" {
 		t.Fatalf("dag map %+v", cfg.DAGMap())
+	}
+	if cfg.FivetranMap()["conn-orders"] != "beta" {
+		t.Fatalf("fivetran map %+v", cfg.FivetranMap())
 	}
 	var alphaDB string
 	for _, p := range cfg.Products() {
@@ -207,6 +210,25 @@ func TestQualityTablesAreConfigDriven(t *testing.T) {
 	sc := cfg.SnowflakeConn()
 	if sc.Account != "acct" || sc.Role != "reader" || sc.Warehouse != "xs_wh" || sc.User != "tester" {
 		t.Fatalf("snowflake conn %+v", sc)
+	}
+}
+
+func TestFivetranCredentialsFromEnv(t *testing.T) {
+	t.Setenv("FIVETRAN_API_KEY", "k1")
+	t.Setenv("FIVETRAN_API_SECRET", "s1")
+	path := filepath.Join(t.TempDir(), "live.json")
+	if err := os.WriteFile(path, []byte(`{"data_products":[{"id":"alpha","fivetran_connector_ids":["c1"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FivetranKey() != "k1" || cfg.FivetranSecret() != "s1" {
+		t.Fatalf("key %q secret %q", cfg.FivetranKey(), cfg.FivetranSecret())
+	}
+	if cfg.FivetranMap()["c1"] != "alpha" {
+		t.Fatalf("map %+v", cfg.FivetranMap())
 	}
 }
 

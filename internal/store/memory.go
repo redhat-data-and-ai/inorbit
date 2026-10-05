@@ -15,6 +15,7 @@ type Memory struct {
 	dags      map[string][]domain.DAG
 	livePipe  []domain.DAG
 	martPipe  []domain.DAG
+	conns     map[string][]domain.Connector
 	checks    map[string][]domain.Check
 	qsrc      map[string]domain.QualitySources
 	lineage   map[string]domain.Lineage
@@ -31,6 +32,7 @@ func New() *Memory {
 		dags:      map[string][]domain.DAG{},
 		livePipe:  []domain.DAG{},
 		martPipe:  []domain.DAG{},
+		conns:     map[string][]domain.Connector{},
 		checks:    map[string][]domain.Check{},
 		qsrc:      map[string]domain.QualitySources{},
 		lineage:   map[string]domain.Lineage{},
@@ -64,6 +66,18 @@ func (m *Memory) LivePipeline() []domain.DAG {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]domain.DAG(nil), m.livePipe...)
+}
+
+func (m *Memory) SetConnectors(dataProductID string, conns []domain.Connector) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.conns[dataProductID] = append([]domain.Connector(nil), conns...)
+}
+
+func (m *Memory) Connectors(id string) []domain.Connector {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domain.Connector(nil), m.conns[id]...)
 }
 
 func (m *Memory) SetMartPipeline(dags []domain.DAG) {
@@ -280,6 +294,10 @@ func (m *Memory) TouchAstroRuns(t time.Time) {
 
 func (m *Memory) TouchAstroTags(t time.Time) {
 	m.SetMeta(func(p *domain.PollMeta) { p.LastAstroTagPoll = t.UTC() })
+}
+
+func (m *Memory) TouchFivetran(t time.Time) {
+	m.SetMeta(func(p *domain.PollMeta) { p.LastFivetranPoll = t.UTC() })
 }
 
 func (m *Memory) TouchQuality(t time.Time) {

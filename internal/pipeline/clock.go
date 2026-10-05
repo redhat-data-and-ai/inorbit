@@ -114,7 +114,7 @@ func overallStatus(dag domain.DAG, now time.Time, fresh domain.FreshnessBand, sl
 	}
 
 	if st == "FAILED" {
-		msg := "DAG failed"
+		msg := entity(dag) + " failed"
 		if dag.ErrorMessage != "" {
 			msg += " — " + dag.ErrorMessage
 		}
@@ -124,24 +124,24 @@ func overallStatus(dag domain.DAG, now time.Time, fresh domain.FreshnessBand, sl
 		return domain.OverallPaused, "Custom DAG is paused"
 	}
 	if dag.IsPaused && dag.IntervalMins == nil {
-		return domain.OverallPaused, "DAG is paused (manual-only, no defined schedule)"
+		return domain.OverallPaused, entity(dag) + " is paused (manual-only, no defined schedule)"
 	}
 	if dag.IsPaused && dag.NextExpectedAt != nil {
 		overdue := now.Sub(dag.NextExpectedAt.UTC()).Minutes()
 		if overdue > slaM*2 {
-			return domain.OverallFailed, fmt.Sprintf("DAG is paused and critically overdue — data is %s old (2x SLA exceeded)", ageStr)
+			return domain.OverallFailed, fmt.Sprintf("%s is paused and critically overdue — data is %s old (2x SLA exceeded)", entity(dag), ageStr)
 		}
 		if fresh == domain.FreshnessRed {
-			return domain.OverallDelayed, fmt.Sprintf("DAG is paused and missed expected scheduled run — data is %s old", ageStr)
+			return domain.OverallDelayed, fmt.Sprintf("%s is paused and missed expected scheduled run — data is %s old", entity(dag), ageStr)
 		}
 	}
 	if st == "RUNNING" && dag.SilentMonitored && dag.StartedAt != nil {
 		runMins := now.Sub(dag.StartedAt.UTC()).Minutes()
 		if runMins > slaM*2 {
-			return domain.OverallFailed, fmt.Sprintf("DAG is still running and critically overdue — running for %.0fm (2x SLA exceeded)", math.Round(runMins))
+			return domain.OverallFailed, fmt.Sprintf("%s is still running and critically overdue — running for %.0fm (2x SLA exceeded)", entity(dag), math.Round(runMins))
 		}
 		if sla == domain.SLABreach {
-			return domain.OverallDelayed, fmt.Sprintf("DAG is still running but has breached SLA — running for %.0fm", math.Round(runMins))
+			return domain.OverallDelayed, fmt.Sprintf("%s is still running but has breached SLA — running for %.0fm", entity(dag), math.Round(runMins))
 		}
 	}
 	if st == "RUNNING" {
@@ -182,7 +182,7 @@ func RollupFreshness(dp domain.DataProduct, dags []domain.DAG, now time.Time) do
 		CheckedAt:         now.UTC(),
 	}
 	if len(dags) == 0 {
-		out.StatusReason = "No DAGs monitored"
+		out.StatusReason = "No pipelines monitored"
 		return out
 	}
 	var worstBand domain.FreshnessBand = domain.FreshnessGreen
@@ -246,4 +246,11 @@ func rankSLA(s domain.PipelineSLA) int {
 	default:
 		return 0
 	}
+}
+
+func entity(d domain.DAG) string {
+	if strings.EqualFold(d.PipelineType, domain.PipelineTypeFivetran) {
+		return "Connector"
+	}
+	return "DAG"
 }

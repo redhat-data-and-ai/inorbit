@@ -57,7 +57,7 @@ func dagFromMart(rec map[string]any) (domain.DAG, bool) {
 		SilentMonitored:  martBool(rec, "IS_SILENT_FAILURE_MONITORED"),
 		AstroURL:         martStr(rec, "ASTRO_URL"),
 		TriggerType:      martStr(rec, "TRIGGER_TYPE"),
-		PipelineType:     firstNonEmptyMart(martStr(rec, "PIPELINE_TYPE"), "DAG"),
+		PipelineType:     firstNonEmptyMart(martStr(rec, "PIPELINE_TYPE"), domain.PipelineTypeDAG),
 		FrequencyDisplay: martStr(rec, "DAG_FREQUENCY_DISPLAY", "DAG_EXPECTED_FREQUENCY"),
 		Runs7d:           martInt(rec, "DAG_RUNS_7D"),
 		Runs30d:          martInt(rec, "DAG_RUNS_30D"),
@@ -84,7 +84,7 @@ func dagFromMart(rec map[string]any) (domain.DAG, bool) {
 		d.DataProductID = d.DataProductName
 	}
 	if d.PipelineType == "" {
-		d.PipelineType = "DAG"
+		d.PipelineType = domain.PipelineTypeDAG
 	}
 	return d, true
 }

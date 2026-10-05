@@ -38,6 +38,7 @@ func preProdName(v string) bool {
 		strings.Contains(v, "pre_prod") ||
 		strings.Contains(v, "pre prod") ||
 		strings.Contains(v, "staging") ||
+		containsWord(v, "stage") ||
 		containsWord(v, "uat")
 }
 

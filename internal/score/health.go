@@ -40,7 +40,7 @@ func scoreOne(dp domain.DataProduct, checks []domain.Check, cfg Config) domain.H
 	}
 
 	agg := map[domain.Dimension]*dimAgg{}
-	var astro, validation int
+	var astro, fivetran, validation int
 	for _, c := range checks {
 		h.TotalChecks++
 		if c.Status == domain.CheckFailed {
@@ -52,6 +52,8 @@ func scoreOne(dp domain.DataProduct, checks []domain.Check, cfg Config) domain.H
 		switch c.SourceType {
 		case domain.SrcAstroFreshness, domain.SrcAstroPipeline:
 			astro++
+		case domain.SrcFivetranFreshness, domain.SrcFivetranPipeline:
+			fivetran++
 		case domain.SrcValidation:
 			validation++
 		}
@@ -74,6 +76,7 @@ func scoreOne(dp domain.DataProduct, checks []domain.Check, cfg Config) domain.H
 		}
 	}
 	h.AstroCheckCount = astro
+	h.FivetranCheckCount = fivetran
 	h.ValidationCheckCount = validation
 
 	var weightSum float64

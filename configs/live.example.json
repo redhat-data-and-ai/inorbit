@@ -75,5 +75,9 @@
     "database": "INORBIT_DB",
     "schema": "MARTS",
     "table": "PIPELINE_STATUS"
+  },
+  "fivetran": {
+    "api_key_env": "FIVETRAN_API_KEY",
+    "api_secret_env": "FIVETRAN_API_SECRET"
   }
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/inorbit/inorbit/internal/domain"
 	"github.com/inorbit/inorbit/internal/engine"
 	"github.com/inorbit/inorbit/internal/ingest/astro"
+	"github.com/inorbit/inorbit/internal/ingest/fivetran"
 	"github.com/inorbit/inorbit/internal/ingest/lineage"
 	"github.com/inorbit/inorbit/internal/ingest/quality"
 	"github.com/inorbit/inorbit/internal/store"
@@ -35,12 +36,16 @@ type intervals struct {
 
 type liveAirflow struct {
 	client    *astro.Client
+	fivetran  *fivetran.Client
 	quality   *quality.Snowflake
 	lineage   domain.QualityTable
 	pipeline  domain.QualityTable
 	products  []domain.DataProduct
 	extra     map[string]string
+	ftExtra   map[string]string
 	airflowMu sync.Mutex
+	ftMu      sync.Mutex
+	pipeMu    sync.Mutex
 }
 
 func main() {
@@ -176,16 +181,35 @@ func mustLive(lg *log.Logger, st *store.Memory, configPath string) *liveAirflow 
 	if sf == nil {
 		warns = append(warns, "Snowflake quality ingest is off, so validation/Elementary scores are missing. Set SNOWFLAKE_USER (SSO) and restart.")
 	}
+	ftKey := cfg.FivetranKey()
+	ftSecret := cfg.FivetranSecret()
+	var ft *fivetran.Client
+	if ftKey == "" || ftSecret == "" {
+		lg.Printf("warning: Fivetran API key/secret empty; source-aligned products will not poll Fivetran. Set FIVETRAN_API_KEY and FIVETRAN_API_SECRET (gitignored .env) and restart.")
+		warns = append(warns, "Fivetran API credentials are empty, so source-aligned products will not show live connectors. Put FIVETRAN_API_KEY and FIVETRAN_API_SECRET in .env (gitignored) or export them, then restart.")
+	} else {
+		ft = &fivetran.Client{
+			APIKey:       ftKey,
+			APISecret:    ftSecret,
+			BaseURL:      cfg.Fivetran.BaseURL,
+			DashboardURL: cfg.Fivetran.DashboardURL,
+			GroupIDs:     cfg.Fivetran.GroupIDs,
+			Log:          lg,
+		}
+		lg.Printf("fivetran ingest enabled for source-aligned products")
+	}
 	if len(warns) > 0 {
 		st.SetMeta(func(m *domain.PollMeta) { m.Warnings = warns })
 	}
 	return &liveAirflow{
 		client:   &astro.Client{Token: token, Deployments: deps, Log: lg},
+		fivetran: ft,
 		quality:  sf,
 		lineage:  cfg.LineageTable(),
 		pipeline: cfg.PipelineTable(),
 		products: products,
 		extra:    cfg.DAGMap(),
+		ftExtra:  cfg.FivetranMap(),
 	}
 }
 
@@ -199,7 +223,7 @@ func logMem(lg *log.Logger, label string) {
 func runLiveStartup(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, boot time.Time) {
 	now := time.Now().UTC()
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		phase := time.Now()
@@ -209,6 +233,18 @@ func runLiveStartup(ctx context.Context, lg *log.Logger, st *store.Memory, eng *
 			return
 		}
 		lg.Printf("startup airflow ingest: %d dag(s) took=%s", n, time.Since(phase).Round(time.Millisecond))
+	}()
+	go func() {
+		defer wg.Done()
+		phase := time.Now()
+		n, err := pollFivetran(ctx, lg, st, eng, live, now)
+		if err != nil {
+			lg.Printf("startup fivetran ingest failed: %v (took %s)", err, time.Since(phase).Round(time.Millisecond))
+			return
+		}
+		if live.fivetran != nil {
+			lg.Printf("startup fivetran ingest: %d connector(s) took=%s", n, time.Since(phase).Round(time.Millisecond))
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -251,7 +287,7 @@ func pollAirflow(ctx context.Context, lg *log.Logger, st *store.Memory, eng *eng
 		return 0, err
 	}
 	st.SetLivePipeline(dags)
-	astro.Apply(st, eng, astro.MergeLiveAndMart(st.LivePipeline(), st.MartPipeline()), now)
+	applyMergedPipeline(st, eng, live, now)
 	st.TouchAstroRuns(time.Now().UTC())
 	n := 0
 	for _, p := range live.products {
@@ -312,7 +348,7 @@ func pollPipelineMart(ctx context.Context, lg *log.Logger, st *store.Memory, eng
 	}
 	mapped := astro.MapMart(rows, live.products)
 	st.SetMartPipeline(mapped)
-	astro.Apply(st, eng, astro.MergeLiveAndMart(st.LivePipeline(), st.MartPipeline()), now)
+	applyMergedPipeline(st, eng, live, now)
 	nProd := map[string]struct{}{}
 	for _, d := range mapped {
 		nProd[d.DataProductID] = struct{}{}
@@ -321,12 +357,49 @@ func pollPipelineMart(ctx context.Context, lg *log.Logger, st *store.Memory, eng
 	return len(mapped), nil
 }
 
+func pollFivetran(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) (int, error) {
+	if live == nil || live.fivetran == nil {
+		return 0, nil
+	}
+	live.ftMu.Lock()
+	conns, err := live.fivetran.FetchForProducts(ctx, live.products, live.ftExtra)
+	live.ftMu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	by := map[string][]domain.Connector{}
+	for _, c := range conns {
+		by[c.DataProductID] = append(by[c.DataProductID], c)
+	}
+	for _, p := range live.products {
+		st.SetConnectors(p.ID, by[p.ID])
+	}
+	eng.Recompute(now)
+	st.TouchFivetran(time.Now().UTC())
+	for _, p := range live.products {
+		if n := len(by[p.ID]); n > 0 {
+			lg.Printf("fivetran ingest %s: %d connector(s)", p.ID, n)
+		}
+	}
+	return len(conns), nil
+}
+
+func applyMergedPipeline(st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) {
+	if live != nil {
+		live.pipeMu.Lock()
+		defer live.pipeMu.Unlock()
+	}
+	liveRows := st.LivePipeline()
+	astro.Apply(st, astro.MergeLiveAndMart(liveRows, st.MartPipeline()))
+	eng.Recompute(now)
+}
+
 func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Time, configPath string) []string {
 	path, err := demo.Resolve(configPath)
 	if err != nil {
 		lg.Fatalf("%v", err)
 	}
-	products, dags, checks, lineageRows, err := demo.LoadFile(path, now)
+	products, dags, checks, lineageRows, conns, err := demo.LoadFile(path, now)
 	if err != nil {
 		lg.Fatalf("demo catalog %s: %v", path, err)
 	}
@@ -342,6 +415,10 @@ func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Tim
 	for _, lin := range lineageRows {
 		byL[lin.DataProductID] = lin
 	}
+	byConn := map[string][]domain.Connector{}
+	for _, c := range conns {
+		byConn[c.DataProductID] = append(byConn[c.DataProductID], c)
+	}
 	ids := make([]string, 0, len(products))
 	for _, p := range products {
 		st.UpsertProduct(p)
@@ -349,12 +426,14 @@ func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Tim
 		st.SetChecks(p.ID, byC[p.ID])
 		st.SetQualitySources(p.ID, quality.ConfigSources(p))
 		st.SetLineage(p.ID, byL[p.ID])
+		st.SetConnectors(p.ID, byConn[p.ID])
 		ids = append(ids, p.ID)
 	}
 	eng.Recompute(now)
 	st.TouchAstroRuns(now)
 	st.TouchQuality(now)
 	st.TouchLineage(now)
+	st.TouchFivetran(now)
 	lg.Printf("demo catalog %s", path)
 	return ids
 }
@@ -387,6 +466,9 @@ func runWorkers(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engi
 			}
 			if _, err := pollAirflow(ctx, lg, st, eng, live, t); err != nil {
 				lg.Printf("astro run poll (live): %v", err)
+			}
+			if _, err := pollFivetran(ctx, lg, st, eng, live, t); err != nil {
+				lg.Printf("fivetran poll (live): %v", err)
 			}
 		case t := <-tags.C:
 			st.TouchAstroTags(t)

@@ -19,6 +19,9 @@ run-live: ui.prepare
 	if [ -z "$$ASTRO_TOKEN" ] && [ -z "$$ASTRO_API_TOKEN" ]; then \
 	  echo "make run-live: ASTRO_TOKEN is empty — Airflow will 401 and the dashboard stays at 0 DAGs. Export ASTRO_TOKEN or put it in .env (gitignored)."; \
 	fi; \
+	if [ -z "$$FIVETRAN_API_KEY" ] || [ -z "$$FIVETRAN_API_SECRET" ]; then \
+	  echo "make run-live: Fivetran API key/secret empty — source-aligned products will not show live connectors on Lineage. Export FIVETRAN_API_KEY and FIVETRAN_API_SECRET or put them in .env (gitignored)."; \
+	fi; \
 	cfg=configs/live.json; \
 	if [ ! -f $$cfg ]; then cfg=configs/live.example.json; fi; \
 	go run ./cmd/inorbit -mode=live -config=$$cfg -addr=:8080
