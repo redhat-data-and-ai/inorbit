@@ -200,11 +200,21 @@ type HealthStatus struct {
 	EvaluatedAt            time.Time   `json:"evaluated_at"`
 }
 
-// HealthPoint is one sample on the live health trend line.
+// HealthPoint is one sample on the health trend line (warehouse daily snapshot
+// plus today's live score).
 type HealthPoint struct {
-	At     time.Time   `json:"t"`
-	Score  float64     `json:"health_score"`
-	Status HealthLabel `json:"status"`
+	At                     time.Time   `json:"t"`
+	Score                  float64     `json:"health_score"`
+	Status                 HealthLabel `json:"status"`
+	TotalChecks            int         `json:"total_checks,omitempty"`
+	FailedChecks           int         `json:"failed_checks,omitempty"`
+	FreshnessScore         *float64    `json:"freshness_score,omitempty"`
+	AccuracyScore          *float64    `json:"accuracy_score,omitempty"`
+	ConsistencyScore       *float64    `json:"consistency_score,omitempty"`
+	CompletenessScore      *float64    `json:"completeness_score,omitempty"`
+	ValidityScore          *float64    `json:"validity_score,omitempty"`
+	UniquenessScore        *float64    `json:"uniqueness_score,omitempty"`
+	MeasuredDimensionCount int         `json:"measured_dimension_count,omitempty"`
 }
 
 type FreshnessSLA struct {
@@ -242,7 +252,7 @@ type Subscription struct {
 
 // LineageNode is one upstream source or downstream consumer from MARTS.DP_LINEAGE.
 // Fivetran chips add connector_service / connection_count / paused_count when live
-// ingest has grouped the node by (schema, connector type).
+// ingest has grouped the node by (schema, connector type, environment).
 type LineageNode struct {
 	Name             string   `json:"name"`
 	Type             string   `json:"type,omitempty"`
@@ -253,6 +263,8 @@ type LineageNode struct {
 	ConnectorType    string   `json:"connector_type,omitempty"`
 	ConnectionCount  int      `json:"connection_count,omitempty"`
 	PausedCount      int      `json:"paused_count,omitempty"`
+	GroupName        string   `json:"group_name,omitempty"`
+	DashboardURL     string   `json:"dashboard_url,omitempty"`
 }
 
 // Connector is one live Fivetran connection matched to a source-aligned product.
@@ -294,6 +306,7 @@ type Lineage struct {
 	ConsumerGroupCount    int           `json:"consumer_group_count"`
 	BlastRadiusCount      int           `json:"blast_radius_count"`
 	BlastRadiusScore      string        `json:"blast_radius_score,omitempty"`
+	MartSchemas           []string      `json:"mart_schemas,omitempty"`
 	ComputedAt            time.Time     `json:"computed_at,omitempty"`
 }
 

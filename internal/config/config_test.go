@@ -249,4 +249,8 @@ func TestLineageTableDefaults(t *testing.T) {
 	if !pipe.Enabled || pipe.Database != "INORBIT_DB" || pipe.Schema != "MARTS" || pipe.Table != "PIPELINE_STATUS" {
 		t.Fatalf("pipeline %+v", pipe)
 	}
+	hs := cfg.HealthSnapshotTable()
+	if !hs.Enabled || hs.Database != "INORBIT_DB" || hs.Schema != "MARTS" || hs.Table != "HEALTH_SCORE_SNAPSHOT" {
+		t.Fatalf("health snapshot %+v", hs)
+	}
 }

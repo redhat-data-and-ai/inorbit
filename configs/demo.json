@@ -242,6 +242,32 @@
         "succeeded_ago": "2h",
         "sync_frequency_mins": 60,
         "trigger_type": "SCHEDULED"
+      },
+      {
+        "data_product_id": "beta",
+        "connection_id": "conn_orders_pg_stage",
+        "schema": "orders",
+        "service": "aurora_postgres",
+        "group_name": "stage",
+        "paused": false,
+        "status": "FAILED",
+        "dashboard_url": "https://fivetran.com/dashboard/connections/conn_orders_pg_stage",
+        "failed_ago": "15m",
+        "sync_frequency_mins": 60,
+        "trigger_type": "SCHEDULED"
+      },
+      {
+        "data_product_id": "beta",
+        "connection_id": "conn_design_stage",
+        "schema": "orders_design",
+        "service": "google_sheets",
+        "group_name": "stage",
+        "paused": true,
+        "status": "SUCCESS",
+        "dashboard_url": "https://fivetran.com/dashboard/connections/conn_design_stage",
+        "succeeded_ago": "3h",
+        "sync_frequency_mins": 60,
+        "trigger_type": "SCHEDULED"
       }
     ],
     "checks": [
@@ -301,6 +327,7 @@
         "service_account_count": 1,
         "consumer_group_count": 1,
         "direct_dp_consumer_count": 1,
+        "mart_schemas": ["marts", "customer_marts", "business_marts", "analytics_marts", "dashboard_marts", "federated_marts"],
         "upstream_sources": [
           {"name": "beta", "type": "data_product", "status": "TRUSTED", "health_score": 91},
           {"name": "FIVETRAN_DB.ORDERS", "type": "fivetran_db", "status": "UNKNOWN"}
@@ -316,6 +343,8 @@
         "status": "TRUSTED",
         "health_score": 91,
         "blast_radius_count": 2,
+        "blast_radius_score": "HIGH IMPACT",
+        "mart_schemas": ["marts", "customer_marts", "business_marts", "analytics_marts", "dashboard_marts", "federated_marts"],
         "upstream_sources": [
           {"name": "orders", "type": "fivetran_db", "status": "UNKNOWN"},
           {"name": "orders_design", "type": "fivetran_db", "status": "UNKNOWN"},
@@ -325,7 +354,11 @@
           {"name": "EXT.FILES", "type": "external_table", "status": "UNKNOWN"}
         ],
         "downstream_consumers": [
-          {"name": "alpha", "type": "data_product", "status": "AT_RISK", "health_score": 54}
+          {"name": "alpha", "type": "data_product", "status": "AT_RISK", "health_score": 54},
+          {"name": "beta-app-sa", "type": "service_account", "status": "N/A"},
+          {"name": "beta-warehouse-sa", "type": "service_account", "status": "N/A"},
+          {"name": "beta-dashboard-sa", "type": "service_account", "status": "N/A"},
+          {"name": "Finance reports", "type": "consumer_group", "status": "N/A"}
         ]
       }
     ]

@@ -49,6 +49,9 @@ func TestFivetranFailureScoresLikePipeline(t *testing.T) {
 	if snap.Health.FivetranCheckCount == 0 {
 		t.Fatalf("fivetran_check_count %+v", snap.Health)
 	}
+	if snap.Health.Status != domain.HealthAtRisk || snap.Health.HealthScore >= 80 {
+		t.Fatalf("failed Fivetran should deduct like a failed pipeline, health=%+v", snap.Health)
+	}
 	if len(snap.Pipeline) != 0 {
 		t.Fatalf("connectors should not appear as pipeline rows %+v", snap.Pipeline)
 	}
@@ -124,5 +127,48 @@ func TestSourceAlignedLineageGroupsConnectors(t *testing.T) {
 	}
 	if snow != 1 || sheets != 1 || pg != 1 {
 		t.Fatalf("lineage %+v", snap.Lineage.UpstreamSources)
+	}
+}
+
+func TestMartHealthFillsWhenNoLiveChecks(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	st := store.New()
+	st.UpsertProduct(domain.DataProduct{ID: "beta", Name: "beta", Type: "source-aligned"})
+	st.SetMartHealth(map[string][]domain.HealthPoint{
+		"beta": {{At: now.AddDate(0, 0, -1), Score: 100, Status: domain.HealthTrusted, TotalChecks: 12}},
+	})
+	engine.New(st).Recompute(now)
+	snap, ok := st.Snapshot("beta")
+	if !ok {
+		t.Fatal("missing snapshot")
+	}
+	if snap.Health.Status != domain.HealthTrusted || snap.Health.HealthScore != 100 {
+		t.Fatalf("expected warehouse snapshot fallback %+v", snap.Health)
+	}
+	hist := st.HealthHistory("beta")
+	if len(hist) < 1 || hist[len(hist)-1].Score != 100 {
+		t.Fatalf("trend %+v", hist)
+	}
+}
+
+func TestLiveChecksWinOverMartHealth(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	failAt := now.Add(-10 * time.Minute)
+	interval := 60.0
+	sla := 30.0
+	st := store.New()
+	st.UpsertProduct(domain.DataProduct{ID: "beta", Name: "beta", Type: "source-aligned"})
+	st.SetMartHealth(map[string][]domain.HealthPoint{
+		"beta": {{At: now.AddDate(0, 0, -1), Score: 100, Status: domain.HealthTrusted, TotalChecks: 8}},
+	})
+	st.SetConnectors("beta", []domain.Connector{{
+		DataProductID: "beta", ID: "c1", Schema: "orders", Service: "postgres",
+		GroupName: "prod", Status: "FAILED", FailedAt: &failAt, CompletedAt: &failAt,
+		IntervalMins: &interval, SLAMinutes: &sla,
+	}})
+	engine.New(st).Recompute(now)
+	snap, _ := st.Snapshot("beta")
+	if snap.Health.HealthScore >= 80 || snap.Health.Status != domain.HealthAtRisk {
+		t.Fatalf("live Fivetran should win over warehouse 100 %+v", snap.Health)
 	}
 }

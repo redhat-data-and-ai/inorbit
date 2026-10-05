@@ -73,6 +73,11 @@ func (e *Engine) Recompute(now time.Time) {
 		}
 
 		health := score.Evaluate([]domain.DataProduct{dp}, checks, e.Score)[0]
+		if health.TotalChecks == 0 {
+			if pt, ok := e.Store.LatestMartHealth(dp.ID); ok {
+				applyMartHealth(&health, pt)
+			}
+		}
 		health.EvaluatedAt = now
 		fresh := pipeline.RollupFreshness(dp, scoreDAGs, now)
 		lin := e.Store.Lineage(dp.ID)
@@ -154,4 +159,29 @@ func virtualChecks(dp domain.DataProduct, dag domain.DAG, ev pipeline.DAGEval, n
 		})
 	}
 	return out
+}
+
+func applyMartHealth(h *domain.HealthStatus, pt domain.HealthPoint) {
+	h.HealthScore = pt.Score
+	h.Status = pt.Status
+	h.TotalChecks = pt.TotalChecks
+	h.FailedChecks = pt.FailedChecks
+	h.FreshnessScore = pt.FreshnessScore
+	h.AccuracyScore = pt.AccuracyScore
+	h.ConsistencyScore = pt.ConsistencyScore
+	h.CompletenessScore = pt.CompletenessScore
+	h.ValidityScore = pt.ValidityScore
+	h.UniquenessScore = pt.UniquenessScore
+	h.MeasuredDimensionCount = pt.MeasuredDimensionCount
+	if pt.MeasuredDimensionCount > 0 {
+		h.CoveragePct = float64(pt.MeasuredDimensionCount) / 6.0 * 100
+	}
+	switch {
+	case pt.TotalChecks > 0 && pt.FailedChecks == 0:
+		h.StatusMessage = "All checks passing"
+	case pt.FailedChecks > 0:
+		h.StatusMessage = fmt.Sprintf("%d failed check(s)", pt.FailedChecks)
+	default:
+		h.StatusMessage = "Warehouse health snapshot"
+	}
 }

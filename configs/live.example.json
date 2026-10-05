@@ -76,6 +76,12 @@
     "schema": "MARTS",
     "table": "PIPELINE_STATUS"
   },
+  "health_snapshot": {
+    "enabled": true,
+    "database": "INORBIT_DB",
+    "schema": "MARTS",
+    "table": "HEALTH_SCORE_SNAPSHOT"
+  },
   "fivetran": {
     "api_key_env": "FIVETRAN_API_KEY",
     "api_secret_env": "FIVETRAN_API_SECRET"

@@ -4,11 +4,12 @@ import (
 	"strings"
 
 	"github.com/inorbit/inorbit/internal/domain"
+	"github.com/inorbit/inorbit/internal/pipeline"
 )
 
 // EnrichUpstream replaces generic fivetran_db mart nodes with one node per
-// (schema, connector type) from live connections. Snowpipe / external nodes
-// are left unchanged. Unmatched live groups are appended.
+// (schema, connector type, environment) from live connections. Snowpipe /
+// external nodes are left unchanged. Unmatched live groups are appended.
 func EnrichUpstream(nodes []domain.LineageNode, conns []domain.Connector) []domain.LineageNode {
 	groups := groupConnectors(conns)
 	if len(groups) == 0 {
@@ -49,11 +50,11 @@ type connGroup struct {
 }
 
 func groupConnectors(conns []domain.Connector) []connGroup {
-	type key struct{ schema, service string }
+	type key struct{ schema, service, env string }
 	type acc struct {
-		schema, service string
-		n, paused       int
-		failed          bool
+		schema, service, env, group, url string
+		n, paused                        int
+		failed                           bool
 	}
 	order := make([]key, 0)
 	by := map[key]*acc{}
@@ -66,14 +67,18 @@ func groupConnectors(conns []domain.Connector) []connGroup {
 		if svc == "" {
 			svc = "fivetran"
 		}
-		k := key{schema: strings.ToLower(schema), service: svc}
+		env := pipeline.EnvKind(c.GroupName)
+		k := key{schema: strings.ToLower(schema), service: svc, env: env}
 		a := by[k]
 		if a == nil {
-			a = &acc{schema: schema, service: svc}
+			a = &acc{schema: schema, service: svc, env: env, group: strings.TrimSpace(c.GroupName), url: strings.TrimSpace(c.DashboardURL)}
 			by[k] = a
 			order = append(order, k)
 		}
 		a.n++
+		if a.url == "" {
+			a.url = strings.TrimSpace(c.DashboardURL)
+		}
 		if c.Paused {
 			a.paused++
 		}
@@ -91,7 +96,7 @@ func groupConnectors(conns []domain.Connector) []connGroup {
 			status = "CAUTION"
 		}
 		out = append(out, connGroup{
-			key: groupKey(a.schema, a.service),
+			key: groupKey(a.schema, a.service, a.env),
 			node: domain.LineageNode{
 				Name:             a.schema,
 				Type:             "fivetran_db",
@@ -101,6 +106,8 @@ func groupConnectors(conns []domain.Connector) []connGroup {
 				ConnectorType:    ServiceName(a.service),
 				ConnectionCount:  a.n,
 				PausedCount:      a.paused,
+				GroupName:        a.group,
+				DashboardURL:     a.url,
 			},
 		})
 	}
@@ -157,8 +164,8 @@ func nodeSchema(n domain.LineageNode) string {
 	return name
 }
 
-func groupKey(schema, service string) string {
-	return strings.ToLower(strings.TrimSpace(schema)) + "\x00" + strings.ToLower(strings.TrimSpace(service))
+func groupKey(schema, service, env string) string {
+	return strings.ToLower(strings.TrimSpace(schema)) + "\x00" + strings.ToLower(strings.TrimSpace(service)) + "\x00" + env
 }
 
 // SourceAligned reports whether a product type uses Fivetran source connectors.

@@ -20,7 +20,7 @@ type Memory struct {
 	qsrc      map[string]domain.QualitySources
 	lineage   map[string]domain.Lineage
 	snaps     map[string]domain.Snapshot
-	hist      map[string][]domain.HealthPoint
+	martHist  map[string][]domain.HealthPoint
 	subs      map[string]domain.Subscription
 	snapBytes map[string]int
 	meta      domain.PollMeta
@@ -37,7 +37,7 @@ func New() *Memory {
 		qsrc:      map[string]domain.QualitySources{},
 		lineage:   map[string]domain.Lineage{},
 		snaps:     map[string]domain.Snapshot{},
-		hist:      map[string][]domain.HealthPoint{},
+		martHist:  map[string][]domain.HealthPoint{},
 		subs:      map[string]domain.Subscription{},
 		snapBytes: map[string]int{},
 	}
@@ -136,18 +136,74 @@ func (m *Memory) PutSnapshot(s domain.Snapshot) {
 	if b, err := json.Marshal(s); err == nil {
 		m.snapBytes[s.DataProduct.ID] = len(b)
 	}
-	pt := domain.HealthPoint{At: s.UpdatedAt, Score: s.Health.HealthScore, Status: s.Health.Status}
-	h := append(m.hist[s.DataProduct.ID], pt)
-	if len(h) > 180 {
-		h = h[len(h)-180:]
+}
+
+func (m *Memory) SetMartHealth(byID map[string][]domain.HealthPoint) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	copied := map[string][]domain.HealthPoint{}
+	for id, pts := range byID {
+		copied[id] = append([]domain.HealthPoint(nil), pts...)
 	}
-	m.hist[s.DataProduct.ID] = h
+	m.martHist = copied
+}
+
+func (m *Memory) LatestMartHealth(id string) (domain.HealthPoint, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	pts := m.martHist[id]
+	if len(pts) == 0 {
+		return domain.HealthPoint{}, false
+	}
+	return pts[len(pts)-1], true
 }
 
 func (m *Memory) HealthHistory(id string) []domain.HealthPoint {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]domain.HealthPoint(nil), m.hist[id]...)
+	mart := append([]domain.HealthPoint(nil), m.martHist[id]...)
+	s, ok := m.snaps[id]
+	if !ok || !keepLiveTrend(s.Health) {
+		return mart
+	}
+	today := dayUTC(s.UpdatedAt)
+	out := make([]domain.HealthPoint, 0, len(mart)+1)
+	for _, p := range mart {
+		if dayUTC(p.At).Equal(today) {
+			continue
+		}
+		out = append(out, p)
+	}
+	out = append(out, domain.HealthPoint{
+		At:                     s.UpdatedAt,
+		Score:                  s.Health.HealthScore,
+		Status:                 s.Health.Status,
+		TotalChecks:            s.Health.TotalChecks,
+		FailedChecks:           s.Health.FailedChecks,
+		FreshnessScore:         s.Health.FreshnessScore,
+		AccuracyScore:          s.Health.AccuracyScore,
+		ConsistencyScore:       s.Health.ConsistencyScore,
+		CompletenessScore:      s.Health.CompletenessScore,
+		ValidityScore:          s.Health.ValidityScore,
+		UniquenessScore:        s.Health.UniquenessScore,
+		MeasuredDimensionCount: s.Health.MeasuredDimensionCount,
+	})
+	return out
+}
+
+func keepLiveTrend(h domain.HealthStatus) bool {
+	if h.TotalChecks > 0 || h.HealthScore > 0 {
+		return true
+	}
+	if h.Status != domain.HealthAtRisk {
+		return true
+	}
+	return h.StatusMessage != "" && h.StatusMessage != "No checks configured"
+}
+
+func dayUTC(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func (m *Memory) Snapshot(id string) (domain.Snapshot, bool) {
@@ -264,7 +320,7 @@ func (m *Memory) Meta() domain.PollMeta {
 		dags += len(s.Pipeline)
 		checks += len(s.Quality)
 	}
-	for _, h := range m.hist {
+	for _, h := range m.martHist {
 		hist += len(h)
 	}
 	if n == 0 {

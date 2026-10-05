@@ -54,14 +54,26 @@ func TestLoadReadsCatalogJSON(t *testing.T) {
 	if len(lineageRows) != len(products) {
 		t.Fatalf("lineage %d products %d", len(lineageRows), len(products))
 	}
-	var sawUp bool
+	var sawUp, sawMarts, sawSA bool
 	for _, lin := range lineageRows {
 		if lin.DataProductID == "alpha" && len(lin.UpstreamSources) >= 2 {
 			sawUp = true
 		}
+		if len(lin.MartSchemas) >= 4 {
+			sawMarts = true
+		}
+		if lin.DataProductID == "beta" && lin.ServiceAccountCount >= 3 {
+			sawSA = true
+		}
 	}
 	if !sawUp {
 		t.Fatalf("demo alpha should have upstream sources: %+v", lineageRows)
+	}
+	if !sawMarts {
+		t.Fatalf("demo lineage should include mart schemas: %+v", lineageRows)
+	}
+	if !sawSA {
+		t.Fatalf("demo beta should count service accounts: %+v", lineageRows)
 	}
 	if len(conns) < 2 {
 		t.Fatalf("demo connectors %d", len(conns))
