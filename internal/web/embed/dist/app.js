@@ -19,7 +19,8 @@ const state = {
   runFilter: "all",
   freshnessFilter: "all",
   qualityStatusFilter: "all",
-  lineageKind: "all",
+  lineageDownType: "all",
+  lineageModal: "",
   relWindow: "7d",
   trendWindow: "30d",
   tableSort: "",
@@ -143,6 +144,13 @@ function healthClass(status) {
 function pretty(status) {
   if (!status) return "—";
   const raw = String(status);
+  const aliases = {
+    snowpipe_db: "Snowpipe",
+    fivetran_db: "Fivetran",
+    external_table: "External table",
+  };
+  const aliased = aliases[raw.toLowerCase()];
+  if (aliased) return aliased;
   const u = raw.toUpperCase();
   if (u === "OK") return "OK";
   if (u === "GREEN") return "Trusted";
@@ -164,19 +172,28 @@ function connectorCountLabel(list) {
 
 function pipelineSummary(rows, connectors) {
   const list = rows || [];
-  const extra = connectorCountLabel(connectors);
+  const conns = connectors || [];
+  const extra = connectorCountLabel(conns);
+  const failedConns = conns.filter((c) => String(c.status || "").toUpperCase() === "FAILED").length;
+  const runningConns = conns.filter((c) => String(c.status || "").toUpperCase() === "RUNNING").length;
+  const pausedConns = conns.filter((c) => c.paused).length;
+  const failedDags = list.filter((d) => String(d.dag_status).toUpperCase() === "FAILED" || d.dag_overall_status === "FAILED").length;
+  const runningDags = list.filter((d) => String(d.dag_status).toUpperCase() === "RUNNING").length;
+  const pausedDags = list.filter((d) => d.dag_is_paused).length;
+  const failed = failedDags + failedConns;
+  const running = runningDags + runningConns;
   if (!list.length) {
-    if (extra) return { label: "Connectors", cls: "ok", detail: extra };
-    return { label: "No pipelines", cls: "muted", detail: "0 DAGs" };
+    if (!extra) return { label: "No pipelines", cls: "muted", detail: "0 DAGs" };
+    if (failedConns) return { label: "Failed", cls: "bad", detail: failedConns + " failed · " + extra };
+    if (runningConns) return { label: "Running", cls: "warn", detail: runningConns + " running · " + extra };
+    if (pausedConns === conns.length) return { label: "Paused", cls: "bad", detail: extra };
+    return { label: "Connectors", cls: "ok", detail: extra };
   }
-  const failed = list.filter((d) => String(d.dag_status).toUpperCase() === "FAILED" || d.dag_overall_status === "FAILED").length;
-  const running = list.filter((d) => String(d.dag_status).toUpperCase() === "RUNNING").length;
-  const paused = list.filter((d) => d.dag_is_paused).length;
   const n = pipelineCountLabel(list);
   const detail = extra ? n + " · " + extra : n;
   if (failed) return { label: "Failed", cls: "bad", detail: failed + " failed · " + detail };
   if (running) return { label: "Running", cls: "warn", detail: running + " running · " + detail };
-  if (paused === list.length) return { label: "Paused", cls: "bad", detail };
+  if (pausedDags === list.length && (!conns.length || pausedConns === conns.length)) return { label: "Paused", cls: "bad", detail };
   const worst = list.find((d) => d.dag_overall_status === "AT_RISK") ? "At risk" : "Trusted";
   return { label: worst, cls: worst === "Trusted" ? "ok" : "bad", detail };
 }
@@ -224,6 +241,12 @@ function isFivetran(d) {
 
 function openLabel(d) {
   return isFivetran(d) ? "Open in Fivetran" : "Open in Astro";
+}
+
+function fivetranLink(href, label, compact) {
+  if (!href) return compact ? "" : "—";
+  const text = label || "Open in Fivetran";
+  return `<a class="astro-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(text)}">${esc(text)}</a>`;
 }
 
 function astroLink(d, compact) {
@@ -333,7 +356,7 @@ function pipelineRows(d) {
       </button>
     </td>
     <td class="pipe-name">
-      <div class="pipe-id">${esc(d.dag_id)}</div>
+      <div class="pipe-id">${dagNameCell(d)}</div>
       <div class="pipe-meta">${esc(d.astro_deployment_name || (isFivetran(d) ? "Fivetran" : "Astro"))} · ${esc(d.pipeline_type || "DAG")}${badges ? " " + badges : ""}</div>
     </td>
     <td class="pipe-status">
@@ -492,6 +515,21 @@ function filterTrend(points, w) {
   return inWin.length ? inWin : pts.slice(-1);
 }
 
+function collapseTrend(pts) {
+  const out = [];
+  (pts || []).forEach((p) => {
+    const s = Number(p.health_score);
+    if (Number.isNaN(s)) return;
+    const last = out[out.length - 1];
+    if (last && Math.abs((Number(last.health_score) || 0) - s) < 0.05) {
+      out[out.length - 1] = p;
+      return;
+    }
+    out.push(p);
+  });
+  return out;
+}
+
 function trendDirection(pts) {
   if (!pts || pts.length < 2) return { text: "stable", cls: "muted" };
   const first = Number(pts[0].health_score) || 0;
@@ -502,63 +540,76 @@ function trendDirection(pts) {
   return { text: "stable", cls: "muted" };
 }
 
+function trendLinePath(pts) {
+  if (!pts.length) return "";
+  return pts.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+}
+
 function healthChart(points) {
   const win = state.trendWindow || "30d";
-  const pts = filterTrend(points, win);
+  const raw = collapseTrend(filterTrend(points, win)).filter((p) => {
+    const s = Number(p.health_score);
+    return !Number.isNaN(s);
+  });
+  const max = raw.reduce((m, p) => Math.max(m, Number(p.health_score) || 0), 0);
+  const pts = max > 10 ? raw.filter((p) => (Number(p.health_score) || 0) > 0) : raw;
   const windows = [["7d", "7d"], ["30d", "30d"], ["90d", "3m"], ["all", "All"]].map(([key, label]) =>
-    `<button type="button" class="io-rel-btn${win === key ? " active" : ""}" data-trend-window="${key}">${label}</button>`
+    `<button type="button" class="io-trend-seg-btn${win === key ? " active" : ""}" data-trend-window="${key}" aria-pressed="${win === key ? "true" : "false"}">${label}</button>`
   ).join("");
   const dir = trendDirection(pts);
-  const dirMark = dir.cls === "bad"
-    ? `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M6 9.2L1.8 3.4h8.4L6 9.2z"/></svg>`
-    : dir.cls === "ok"
-      ? `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M6 2.8l4.2 5.8H1.8L6 2.8z"/></svg>`
-      : "";
   const head = `<div class="io-trend-head">
-      <h3 class="io-trend-title">Score Trend By Quality Dimension <span class="io-trend-dir ${dir.cls}">${dirMark}${esc(dir.text)}</span></h3>
-      <div class="io-rel-toggle" role="group" aria-label="Score trend window">${windows}</div>
+      <h3 class="io-trend-title">Score trend <span class="io-trend-dir ${dir.cls}">— ${esc(dir.text)}</span></h3>
+      <div class="io-trend-seg" role="group" aria-label="Score trend window">${windows}</div>
     </div>`;
   if (!pts.length) {
-    return `<div class="io-score-card io-trend-card">${head}<p class="empty">Trend fills as the SLA clock samples the live score.</p></div>`;
+    return `<div class="io-score-card io-trend-card">${head}<p class="empty">Trend fills from the warehouse daily health snapshot.</p></div>`;
   }
-  const w = 720, h = 200, padL = 36, padR = 12, padT = 16, padB = 32;
-  const ys = pts.map((p) => Number(p.health_score) || 0);
+  const w = 720, h = 210, padL = 44, padR = 8, padT = 8, padB = 28;
+  const plotL = padL, plotR = w - padR, plotT = padT, plotB = h - padB;
+  const now = Date.now();
+  const ms = trendWindowMs(win);
   const xs = pts.map((p, i) => {
     const t = Date.parse(p.t);
     return Number.isNaN(t) ? i : t;
   });
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const spanX = maxX === minX ? 1 : maxX - minX;
-  const yAt = (score) => padT + (1 - score / 100) * (h - padT - padB);
-  const xy = pts.map((_, i) => {
-    const x = padL + ((xs[i] - minX) / spanX) * (w - padL - padR);
-    const y = yAt(ys[i]);
-    return [x, y];
-  });
-  const linePts = xy.length === 1
-    ? [[padL, xy[0][1]], [w - padR, xy[0][1]]]
-    : xy;
-  const line = linePts.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const ys = pts.map((p) => Number(p.health_score) || 0);
+  let minX = ms ? now - ms : Math.min(...xs);
+  let maxX = ms ? now : Math.max(now, ...xs);
+  if (maxX === minX) maxX = minX + 1;
+  const yAt = (score) => plotT + (1 - score / 100) * (plotB - plotT);
+  const xAt = (t) => plotL + ((t - minX) / (maxX - minX)) * (plotR - plotL);
+  const linePts = [];
+  const firstX = xAt(xs[0]);
+  if (firstX - plotL > 1) {
+    linePts.push([plotL, yAt(ys[0])]);
+  }
+  pts.forEach((_, i) => linePts.push([xAt(xs[i]), yAt(ys[i])]));
+  const lastX = linePts[linePts.length - 1][0];
+  if (plotR - lastX > 1) {
+    linePts.push([plotR, yAt(ys[ys.length - 1])]);
+  }
+  const line = trendLinePath(linePts);
   const lo = Math.min(...ys);
   const hi = Math.max(...ys);
   const leftLabel = win === "all" ? "Start" : (win === "90d" ? "3m ago" : win + " ago");
+  const ticks = [100, 50, 0].map((n) => {
+    const y = yAt(n);
+    return `<line class="tick" x1="${plotL - 4}" x2="${plotL}" y1="${y}" y2="${y}"></line>
+      <text class="axis-label" x="${plotL - 8}" y="${y + 4}">${n}</text>`;
+  }).join("");
   return `<div class="io-score-card io-trend-card">
     ${head}
-    <svg class="spark" viewBox="0 0 ${w} ${h}" role="img" aria-label="Health score over time">
-      <line class="guide" x1="${padL}" x2="${w - padR}" y1="${yAt(100)}" y2="${yAt(100)}"></line>
-      <line class="guide" x1="${padL}" x2="${w - padR}" y1="${yAt(50)}" y2="${yAt(50)}"></line>
-      <line class="guide" x1="${padL}" x2="${w - padR}" y1="${yAt(0)}" y2="${yAt(0)}"></line>
-      <text class="axis-label" x="${padL - 6}" y="${yAt(100) + 3}">100</text>
-      <text class="axis-label" x="${padL - 6}" y="${yAt(0) + 3}">0</text>
+    <svg class="io-trend-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="Health score over time">
+      <rect class="plot" x="${plotL}" y="${plotT}" width="${plotR - plotL}" height="${plotB - plotT}"></rect>
+      ${ticks}
       <path class="line" d="${line}"></path>
-      <circle class="dot" cx="${linePts[linePts.length - 1][0].toFixed(1)}" cy="${linePts[linePts.length - 1][1].toFixed(1)}" r="3.5"></circle>
-      <text class="axis-label x" x="${padL}" y="${h - 8}">${esc(leftLabel)}</text>
-      <text class="axis-label x end" x="${w - padR}" y="${h - 8}">Today</text>
+      <text class="axis-label x" x="${plotL}" y="${h - 6}">${esc(leftLabel)}</text>
+      <text class="axis-label x end" x="${plotR}" y="${h - 6}">Today</text>
     </svg>
     <div class="io-trend-range">
-      <span class="bad">Lowest ${esc(fmtScore(lo))}%</span>
-      <span class="ok">Highest ${esc(fmtScore(hi))}%</span>
-      </div>
+      <span>Lowest <strong class="lo">${esc(fmtScore(lo))}%</strong></span>
+      <span>Highest <strong class="hi">${esc(fmtScore(hi))}%</strong></span>
+    </div>
   </div>`;
 }
 
@@ -716,10 +767,27 @@ function preferredProductEnv(snap) {
   return kinds[0] || "production";
 }
 
+function lineageNodeInEnv(n, env) {
+  if (!env || env === "all") return true;
+  if (!(n && (n.connector_service || n.connector_type))) return true;
+  if (!n.group_name) return true;
+  return connEnv({ group_name: n.group_name }) === env;
+}
+
+function lineageForEnv(lin, env) {
+  lin = lin || {};
+  const up = (lin.upstream_sources || []).filter((n) => lineageNodeInEnv(n, env));
+  return Object.assign({}, lin, {
+    upstream_sources: up,
+    upstream_count: up.length,
+  });
+}
+
 function scopedSnap(s, env) {
   return Object.assign({}, s, {
     pipeline: pipelineForEnv(s.pipeline, env),
     connectors: connectorsForEnv(s.connectors, env),
+    lineage: lineageForEnv(s.lineage, env),
   });
 }
 
@@ -915,6 +983,8 @@ function resetViewState(route) {
   if (productKey !== lastProductKey) {
     lastProductKey = productKey;
     if (route.view === "detail") state.productEnv = "production";
+    state.lineageModal = "";
+    state.lineageDownType = "all";
   }
   const key = route.view + ":" + (route.id || "") + ":" + (route.tab || "");
   if (key === lastRouteKey) return;
@@ -924,7 +994,6 @@ function resetViewState(route) {
   state.runFilter = "all";
   state.freshnessFilter = "all";
   state.qualityStatusFilter = "all";
-  state.lineageKind = "all";
   state.tableSort = "";
   state.tableSortDir = "asc";
   state.expanded = {};
@@ -1124,6 +1193,8 @@ function connectorStripHTML(snap, hrefBase) {
   const conns = snap.connectors || [];
   if (!conns.length) return "";
   const paused = conns.filter((c) => c.paused).length;
+  const failed = conns.filter((c) => String(c.status || "").toUpperCase() === "FAILED").length;
+  const running = conns.filter((c) => String(c.status || "").toUpperCase() === "RUNNING").length;
   const types = [];
   const seen = {};
   conns.forEach((c) => {
@@ -1134,11 +1205,53 @@ function connectorStripHTML(snap, hrefBase) {
     }
   });
   const typeBit = types.length ? " (" + types.slice(0, 4).join(", ") + (types.length > 4 ? ", …" : "") + ")" : "";
-  const pauseBit = paused ? " · " + paused + " paused" : "";
-  const text = "This product has " + connectorCountLabel(conns) + typeBit + pauseBit + ". Connector type and pause state are on Lineage source nodes.";
+  const bits = ["This product has " + connectorCountLabel(conns) + typeBit];
+  if (failed) bits.push(failed === 1 ? "1 failed" : failed + " failed");
+  if (running) bits.push(running === 1 ? "1 running" : running + " running");
+  if (paused) bits.push(paused === 1 ? "1 paused" : paused + " paused");
+  const text = bits.join(" · ") + ". Status is in the connector table. Failed or unhealthy connectors deduct health like a failed Airflow DAG.";
   const href = hrefBase ? hrefBase + "?tab=lineage" : "";
   const body = href ? `<a href="${esc(href)}">${esc(text)} View lineage</a>` : esc(text);
-  return `<div class="io-conn-strip">${body}</div>`;
+  return `<div class="io-conn-strip">${body}</div>${connectorTableHTML(conns)}`;
+}
+
+function connectorTableHTML(conns) {
+  const list = conns || [];
+  if (!list.length) return "";
+  return `
+    <h3 class="pf-v5-c-title pf-m-md io-conn-table-title">Fivetran connectors <span class="chip-count">${list.length}</span></h3>
+    <div class="io-table-wrap">
+      <table class="pf-v5-c-table pf-m-compact pipe-table" role="grid">
+        <thead><tr>
+          <th>Connector</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Last sync</th>
+          <th>Open</th>
+        </tr></thead>
+        <tbody>
+          ${list.map((c) => {
+            const name = c.schema || c.connection_id || "—";
+            const type = c.service_name || pretty(c.service);
+            const paused = c.paused ? `<span class="flag muted">Paused</span>` : "";
+            const last = String(c.status || "").toUpperCase() === "FAILED" ? (c.failed_at || c.completed_at) : (c.succeeded_at || c.completed_at);
+            const href = c.dashboard_url;
+            const nameHTML = href
+              ? `<a class="dag-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(name)} in Fivetran">${esc(name)}</a>`
+              : esc(name);
+            const open = fivetranLink(href, "Open in Fivetran", true) || "—";
+            const err = c.error_message ? `<div class="pipe-note">${esc(c.error_message)}</div>` : "";
+            return `<tr>
+              <td><div class="pipe-id">${nameHTML}</div>${paused}${err}</td>
+              <td>${esc(type)}</td>
+              <td>${label(c.status || "UNKNOWN")}</td>
+              <td>${fmtWhen(last)}</td>
+              <td class="col-astro">${open}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>`;
 }
 
 function fetchBanner(extra) {
@@ -1312,6 +1425,35 @@ function nodeKind(n) {
   return t || "other";
 }
 
+function linIcon(kind) {
+  const svg = (inner) => `<svg class="io-lin-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">${inner}</svg>`;
+  if (kind === "db") return svg(`<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/>`);
+  if (kind === "person") return svg(`<circle cx="12" cy="8" r="3.2"/><path d="M5 20c1.4-4.2 4-6.2 7-6.2s5.6 2 7 6.2"/>`);
+  if (kind === "cubes") return svg(`<rect x="4" y="9" width="9" height="9" rx="1.5"/><rect x="11" y="5" width="9" height="9" rx="1.5"/>`);
+  if (kind === "spark") return svg(`<path d="M12 3.5l1.2 5.2L18.5 10 13.2 11.3 12 16.5 10.8 11.3 5.5 10l5.3-1.3z"/>`);
+  if (kind === "bolt") return svg(`<path d="M13 3L6 13h5l-1 8 8-11h-5z" fill="currentColor" stroke="none"/>`);
+  if (kind === "wand") return svg(`<path d="M4 20L14.5 9.5M16 4v3M20 8h-3M18.5 5.5l-1.5 1.5M12 8.5l1.5-1.5"/>`);
+  if (kind === "link") return svg(`<path d="M10 13.5l-1.2 1.2a3.2 3.2 0 01-4.5-4.5L6.5 8M14 10.5l1.2-1.2a3.2 3.2 0 014.5 4.5L17.5 16M9 12h6"/>`);
+  if (kind === "folder") return svg(`<path d="M3 8.5V7.2c0-.4.3-.7.7-.7h5.2l1.6 1.5h9.8c.4 0 .7.3.7.7V18c0 .6-.5 1-1 1H4c-.6 0-1-.4-1-1V8.5z"/>`);
+  if (kind === "caret") return svg(`<path d="M8 10l4 4 4-4"/>`);
+  return connectorMark("");
+}
+
+function lineageTrustChip(status, score) {
+  const st = String(status || "").trim();
+  if (!st || st.toUpperCase() === "N/A") return "";
+  const cls = healthClass(st);
+  let text = pretty(st);
+  if (score != null && score !== "" && cls !== "muted") {
+    const n = Number(score);
+    if (!Number.isNaN(n)) text += " " + (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")) + "%";
+  }
+  const mark = cls === "ok"
+    ? `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="currentColor"/><path d="M3.4 6.1l1.7 1.7 3.4-3.6" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/></svg>`
+    : "";
+  return `<span class="io-lin-trust ${cls}">${mark}${esc(text)}</span>`;
+}
+
 function connectorMark(service) {
   const s = String(service || "").toLowerCase();
   let inner = `<circle cx="12" cy="12" r="8"/><path d="M8 12h8"/>`;
@@ -1327,143 +1469,161 @@ function connectorMark(service) {
   return `<svg class="lineage-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">${inner}</svg>`;
 }
 
-function genericSourceMark() {
-  return `<svg class="lineage-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="7" rx="7" ry="3"/><path d="M5 7v10c0 1.7 3.1 3 7 3s7-1.3 7-3V7"/></svg>`;
-}
-
 function lineageSourceCard(n) {
   const name = n.name || n.schema || "—";
+  const kind = nodeKind(n);
+  const isDP = kind === "data_product";
   const typed = n.connector_service || n.connector_type;
-  const typeLabel = typed ? (n.connector_type || pretty(n.connector_service)) : pretty(n.type || "source");
-  const typeRow = `<div class="io-src-type${typed ? "" : " io-src-type-generic"}">${typed ? connectorMark(n.connector_service) : genericSourceMark()}<span>${esc(typeLabel)}</span></div>`;
+  const typeLabel = typed ? (n.connector_type || pretty(n.connector_service)) : "";
   const nConn = Number(n.connection_count) || 0;
   const nPaused = Number(n.paused_count) || 0;
   const chips = [];
   if (typed && nConn) chips.push(`<span class="io-src-chip">${esc(nConn === 1 ? "1 connection" : nConn + " connections")}</span>`);
   if (nPaused > 0) chips.push(`<span class="io-src-chip io-src-chip-paused">${esc(nPaused === 1 ? "1 paused" : nPaused + " paused")}</span>`);
-  return `<div class="io-src-card">
-    <div class="io-src-title">${esc(name)}</div>
-    ${typeRow}
-    ${chips.length ? `<div class="io-src-meta">${chips.join("")}</div>` : ""}
+  const trust = lineageTrustChip(n.status, n.health_score);
+  const openFt = !isDP && n.dashboard_url ? fivetranLink(n.dashboard_url, "Open in Fivetran", true) : "";
+  let meta;
+  if (typed) {
+    meta = `<div class="io-src-meta"><span class="io-src-type">${connectorMark(n.connector_service)}<span>${esc(typeLabel)}</span></span>${chips.join("")}${trust}${openFt}</div>`;
+  } else if (isDP && trust) {
+    meta = `<div class="io-src-meta">${trust}</div>`;
+  } else {
+    meta = `<div class="io-src-meta"><span class="io-src-type io-src-type-generic">${linIcon("db")}<span>${esc(pretty(n.type || "source"))}</span></span>${openFt}</div>`;
+  }
+  const inner = `<span class="io-lin-glyph">${linIcon("db")}</span>
+    <div class="io-src-body">
+      <div class="io-src-title">${esc(name)}${isDP ? `<span class="io-lin-spark">${linIcon("spark")}</span>` : ""}</div>
+      ${meta}
+    </div>`;
+  if (isDP && name) {
+    return `<a class="io-src-card io-src-card-link" href="#/data-product/${encodeURIComponent(name)}?tab=lineage">${inner}</a>`;
+  }
+  return `<article class="io-src-card">${inner}</article>`;
+}
+
+function lineageConsumerCard(n) {
+  const name = n.name || "—";
+  const kind = nodeKind(n);
+  const isDP = kind === "data_product";
+  const icon = isDP ? linIcon("spark") : kind === "consumer_group" ? linIcon("cubes") : linIcon("person");
+  const trust = lineageTrustChip(n.status, n.health_score);
+  const typeChip = `<span class="io-lin-type">${esc(pretty(n.type || "consumer"))}</span>`;
+  const inner = `<span class="io-lin-glyph">${icon}</span>
+    <div class="io-src-body">
+      <div class="io-src-title">${esc(name)}</div>
+      <div class="io-src-meta">${isDP && trust ? trust : typeChip}</div>
+    </div>`;
+  if (isDP && name) {
+    return `<a class="io-src-card io-src-card-link" href="#/data-product/${encodeURIComponent(name)}?tab=lineage">${inner}</a>`;
+  }
+  return `<article class="io-src-card">${inner}</article>`;
+}
+
+function lineageArrow() {
+  return `<div class="lineage-arrow" aria-hidden="true">
+    <svg viewBox="0 0 40 16" width="40" height="16" fill="none" stroke="#8a8d90" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8h32M28 3l8 5-8 5"/></svg>
   </div>`;
 }
 
-function lineageNodeHTML(n, known) {
-  if (nodeKind(n) === "source") return lineageSourceCard(n);
-  const kind = nodeKind(n);
-  const score = n.health_score != null ? fmtScore(n.health_score) : "—";
-  const name = n.name || "—";
-  const canLink = kind === "data_product" && name;
-  const inner = `<span class="lineage-name">${esc(name)}</span>${label(n.status || "UNKNOWN")} <span class="muted-cell">${esc(pretty(n.type || "data product"))} · ${esc(score)}</span>`;
-  if (canLink) {
-    return `<a class="pf-v5-c-card pf-m-compact pf-m-clickable pf-m-flat lineage-pill" href="#/data-product/${encodeURIComponent(name)}?tab=lineage">${inner}</a>`;
+function lineageStack(title, nodes, moreKey, cardFn, extra, total) {
+  const shown = nodes.slice(0, 3);
+  const more = Math.max(0, nodes.length - shown.length);
+  const moreText = moreKey === "up"
+    ? `+${more} more sources — View all`
+    : `+${more} more consumers — View all`;
+  const moreBtn = more > 0
+    ? `<button type="button" class="lineage-more" data-lineage-more="${esc(moreKey)}">${esc(moreText)}</button>`
+    : "";
+  const count = total != null ? total : nodes.length;
+  if (!nodes.length) {
+    return `<div class="io-lin-colhead"><div class="io-lin-k">${esc(title)} <span class="io-lin-count">${count}</span></div>${extra || ""}</div><p class="muted-cell">No ${esc(title.toLowerCase())}</p>`;
   }
-  return `<div class="pf-v5-c-card pf-m-compact pf-m-flat lineage-pill">${inner}</div>`;
+  return `<div class="io-lin-colhead"><div class="io-lin-k">${esc(title)} <span class="io-lin-count">${count}</span></div>${extra || ""}</div>${shown.map(cardFn).join("")}${moreBtn}`;
 }
 
-function lineageTable(title, nodes, kind) {
-  const q = state.tableFilter.trim().toLowerCase();
-  let rows = (nodes || []).filter((n) => {
-    if (kind !== "all" && nodeKind(n) !== kind) return false;
-    return rowMatch(q, [n.name, n.type, n.status, n.connector_type, n.connector_service, n.schema]);
-  });
-  rows = applyTableSort(rows, {
-    name: (n) => n.name,
-    type: (n) => n.connector_type || n.type,
-    status: (n) => n.status,
-    score: (n) => n.health_score,
-  });
-  const empty = emptyRow(4, "No " + title.toLowerCase() + " in the mart.", "Lineage is loaded from the observability MARTS.DP_LINEAGE table, not from Airflow.");
-  return `
-    <div>
-      <h3 class="pf-v5-c-title pf-m-md lineage-h">${esc(title)} <span class="chip-count">${rows.length}</span></h3>
-      <div class="io-table-wrap lineage-table">
-        <table class="pf-v5-c-table pf-m-compact" role="grid">
-          <thead><tr>
-            <th>${sortBtn("name", "Name")}</th>
-            <th>${sortBtn("type", "Type")}</th>
-            <th>${sortBtn("status", "Status")}</th>
-            <th>${sortBtn("score", "Health")}</th>
-          </tr></thead>
-          <tbody>
-            ${rows.map((n) => {
-              const kind = nodeKind(n);
-              const nameCell = kind === "data_product" && n.name
-                ? `<a href="#/data-product/${encodeURIComponent(n.name)}?tab=lineage">${esc(n.name)}</a>`
-                : esc(n.name || "—");
-              return `<tr>
-                <td>${nameCell}</td>
-                <td>${esc(n.connector_type || pretty(n.type || "data product"))}</td>
-                <td>${label(n.status || "UNKNOWN")}</td>
-                <td>${n.health_score != null ? esc(fmtScore(n.health_score)) : "—"}</td>
-              </tr>`;
-            }).join("") || empty}
-          </tbody>
-        </table>
+function lineageDatabasesHTML(snap) {
+  const marts = ((snap.lineage || {}).mart_schemas || []).map((s) => String(s || "").trim()).filter(Boolean);
+  if (!marts.length) return "";
+  const p = snap.data_product || {};
+  const db = (p.validation && p.validation.database) || (p.dbt_logs && p.dbt_logs.database) || p.validation_database || "";
+  const dbLabel = db || ((p.data_product_name || "product") + "_DB");
+  const items = marts.map((s) => `<li class="io-mart-item">${linIcon("caret")}${linIcon("folder")}<span>${esc(s)}</span></li>`).join("");
+  return `<section class="io-lin-dbs">
+    <h2 class="io-lin-dbs-title">${linIcon("db")} Data Product Databases</h2>
+    <p class="io-lin-dbs-sub">Marts available for <strong>${esc(dbLabel)}</strong> data consumers</p>
+    <ul class="io-mart-grid">${items}</ul>
+  </section>`;
+}
+
+function lineageModalHTML(title, nodes, cardFn) {
+  return `<div class="io-lin-modal" role="presentation">
+    <div class="io-lin-modal-card" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <div class="io-lin-modal-head">
+        <h3>${esc(title)} <span class="chip-count">${nodes.length}</span></h3>
+        <button type="button" class="io-lin-modal-x" data-lineage-close aria-label="Close">×</button>
       </div>
-    </div>`;
+      <div class="io-lin-modal-list">${nodes.map(cardFn).join("") || `<p class="muted-cell">None</p>`}</div>
+    </div>
+  </div>`;
 }
 
 function renderLineage(snap, base) {
   const lin = snap.lineage || {};
   const up = lin.upstream_sources || [];
   const down = lin.downstream_consumers || [];
-  const kind = state.lineageKind;
-  const allNodes = up.concat(down);
-  const counts = {
-    all: allNodes.length,
-    data_product: allNodes.filter((n) => nodeKind(n) === "data_product").length,
-    source: allNodes.filter((n) => nodeKind(n) === "source").length,
-    service_account: allNodes.filter((n) => nodeKind(n) === "service_account").length,
-    consumer_group: allNodes.filter((n) => nodeKind(n) === "consumer_group").length,
-  };
-  const known = {};
-  (state.snaps || []).forEach((s) => {
-    const p = s.data_product || {};
-    if (p.data_product_id) known[p.data_product_id] = true;
-    if (p.data_product_name) known[p.data_product_name] = true;
-  });
-  const sources = up.filter((n) => nodeKind(n) === "source");
+  const sources = up.filter((n) => nodeKind(n) === "source" || nodeKind(n) === "data_product");
   const typed = sources.filter((n) => n.connector_service || n.connector_type);
-  const genericSrc = sources.filter((n) => !(n.connector_service || n.connector_type));
-  const orderedSources = typed.concat(genericSrc);
-  const shownUp = orderedSources.slice(0, 3);
-  const moreUp = Math.max(0, orderedSources.length - shownUp.length);
-  const impact = lin.blast_radius_score ? label(lin.blast_radius_score) : "";
-  const computed = parseDate(lin.computed_at) ? fmtRelative(lin.computed_at) : "—";
+  const restUp = sources.filter((n) => !(n.connector_service || n.connector_type));
+  const orderedSources = typed.concat(restUp);
+  const downType = state.lineageDownType || "all";
+  const consumers = down
+    .filter((n) => downType === "all" || nodeKind(n) === downType)
+    .slice()
+    .sort((a, b) => {
+      const ra = nodeKind(a) === "service_account" ? 0 : 1;
+      const rb = nodeKind(b) === "service_account" ? 0 : 1;
+      return ra - rb;
+    });
+  const downCounts = {
+    all: down.length,
+    data_product: down.filter((n) => nodeKind(n) === "data_product").length,
+    service_account: down.filter((n) => nodeKind(n) === "service_account").length,
+    consumer_group: down.filter((n) => nodeKind(n) === "consumer_group").length,
+  };
+  const typeSelect = catalogSelect("lineage-down-type", "Consumer type", [
+    ["all", "Type"],
+    ["data_product", "Data product", downCounts.data_product],
+    ["service_account", "Service account", downCounts.service_account],
+    ["consumer_group", "Consumer group", downCounts.consumer_group],
+  ], downType);
   const h = snap.health || {};
-  const left = sources.length
-    ? `<div class="io-lin-k">Upstream sources <span class="chip-count">${sources.length}</span></div>${shownUp.map(lineageSourceCard).join("")}${moreUp > 0 ? `<a class="lineage-more" href="#lineage-upstream">+${moreUp} more sources — View all</a>` : ""}`
-    : (up.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No upstream</p>`);
+  const productName = (snap.data_product || {}).data_product_name || "";
+  const highImpact = /high/i.test(String(lin.blast_radius_score || ""));
+  const srcCard = (n) => lineageSourceCard(n);
+  const downCard = (n) => lineageConsumerCard(n);
+  const modal = state.lineageModal === "up"
+    ? lineageModalHTML("Upstream sources", orderedSources, srcCard)
+    : state.lineageModal === "down"
+      ? lineageModalHTML("Downstream consumers", consumers, downCard)
+      : "";
   return `
+    ${lineageDatabasesHTML(snap)}
+    <h2 class="io-lin-viz-title">Lineage Visualization <span class="io-lin-viz-link" title="Lineage overview">${linIcon("link")}</span></h2>
     <section class="io-lin-overview">
-      <h2 class="io-lin-overview-title">Data Lineage Overview</h2>
+      <h2 class="io-lin-overview-title">${linIcon("wand")} Data Lineage Overview</h2>
       <div class="lineage-flow">
-        <div class="lineage-col up">${left}</div>
-        <div class="pf-v5-c-card pf-m-compact lineage-center">
-          <div class="pf-v5-c-card__body">
-          <div class="k io-metric-k">This product</div>
-          <div class="v io-metric-v">${esc((snap.data_product || {}).data_product_name || "")}</div>
-          <div class="s">${healthChip(h)}${impact ? " " + impact : ""}</div>
-          </div>
+        <div class="lineage-col up">${lineageStack("Upstream sources", orderedSources, "up", srcCard)}</div>
+        ${lineageArrow()}
+        <div class="io-lin-product">
+          <div class="io-lin-product-icons">${linIcon("cubes")}${highImpact ? `<span class="io-lin-bolt">${linIcon("bolt")}</span>` : ""}</div>
+          <div class="io-lin-product-name">${esc(productName)}</div>
+          ${lineageTrustChip(h.status, h.health_score)}
         </div>
-        <div class="lineage-col down">${down.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No downstream</p>`}</div>
+        ${lineageArrow()}
+        <div class="lineage-col down">${lineageStack("Downstream consumers", consumers, "down", downCard, typeSelect, down.length)}</div>
       </div>
-    </section>
-    ${tableToolbar(allNodes.length, allNodes.length, "Filter lineage by name or type",
-      chipGroup([
-        ["all", "All", counts.all],
-        ["data_product", "Data products", counts.data_product],
-        ["source", "Sources", counts.source],
-        ["service_account", "Service accounts", counts.service_account],
-        ["consumer_group", "Consumer groups", counts.consumer_group],
-      ], kind, "lkind")
-    )}
-    <div class="lineage-grid" id="lineage-upstream">
-      ${lineageTable("Upstream sources", up, kind)}
-      ${lineageTable("Downstream consumers", down, kind)}
-    </div>
-    <p class="sub">From the observability warehouse mart (DP_LINEAGE), not a live poll. Computed ${esc(computed)}. ${lin.direct_dp_consumer_count || 0} downstream data products · ${lin.service_account_count || 0} service accounts · ${lin.consumer_group_count || 0} consumer groups.</p>`;
+      ${modal}
+    </section>`;
 }
 
 function renderDetail(route) {
@@ -1559,7 +1719,7 @@ function renderDetail(route) {
           </tbody>
         </table>
       </div>
-      <p class="sub">${esc(pipelineCountLabel(all))} active${connectorCountLabel(view.connectors) ? " · " + esc(connectorCountLabel(view.connectors)) : ""}${customCount ? " · " + customCount + " custom (shown, excluded from scores)" : ""} · Status, SLA, last/next run on the table. Expand a row for interval, age, and URL. <strong>Open in Astro</strong> is on each DAG row.</p>`;
+      <p class="sub">${esc(pipelineCountLabel(all))} active${connectorCountLabel(view.connectors) ? " · " + esc(connectorCountLabel(view.connectors)) : ""}${customCount ? " · " + customCount + " custom (shown, excluded from scores)" : ""} · Status, SLA, last/next run on the table. Expand a row for interval, age, and URL. <strong>Open in Astro</strong> is on each DAG row. <strong>Open in Fivetran</strong> is on each connector row.</p>`;
   } else if (tab === "quality") {
     const q = state.tableFilter.trim().toLowerCase();
     const src = state.sourceFilter;
@@ -1645,7 +1805,7 @@ function renderDetail(route) {
       </div>
       <p class="sub">${vxMissing ? "Validation checks not exist" : vx + " validation" + (latestVx ? " " + fmtRelative(latestVx) : "")} · ${dbtMissing ? "Elementary checks not exist" : dbt + " Elementary" + (latestDbt ? " " + fmtRelative(latestDbt) : "")}. Latest warehouse invocation only.</p>`;
   } else if (tab === "lineage") {
-    body = renderLineage(snap, base);
+    body = renderLineage(view, base);
   } else {
     const h = snap.health || {};
     const f = snap.freshness || {};
@@ -1707,7 +1867,6 @@ function applyChip(el) {
   if (el.dataset.run) state.runFilter = el.dataset.run;
   if (el.dataset.fresh) state.freshnessFilter = el.dataset.fresh;
   if (el.dataset.qstatus) state.qualityStatusFilter = el.dataset.qstatus;
-  if (el.dataset.lkind) state.lineageKind = el.dataset.lkind;
   if (el.dataset.view) state.listView = el.dataset.view;
 }
 
@@ -1716,6 +1875,7 @@ function bindApp() {
   if (!app || app.dataset.bound === "1") return;
   app.dataset.bound = "1";
   app.addEventListener("click", (e) => {
+    if (e.target.closest("a[target=\"_blank\"]")) return;
     const csv = e.target.closest("[data-csv]");
     if (csv) {
       e.preventDefault();
@@ -1785,6 +1945,19 @@ function bindApp() {
       render();
       return;
     }
+    const moreLin = e.target.closest("[data-lineage-more]");
+    if (moreLin) {
+      e.preventDefault();
+      state.lineageModal = moreLin.dataset.lineageMore;
+      render();
+      return;
+    }
+    if (e.target.closest(".io-lin-modal-x") || e.target.classList.contains("io-lin-modal")) {
+      e.preventDefault();
+      state.lineageModal = "";
+      render();
+      return;
+    }
     const row = e.target.closest("tr[data-href]");
     if (row && !e.target.closest("a,button")) go(row.dataset.href);
   });
@@ -1793,7 +1966,14 @@ function bindApp() {
     if (id === "health-filter") state.healthFilter = e.target.value;
     else if (id === "type-filter") state.typeFilter = e.target.value;
     else if (id === "env-filter") state.envFilter = e.target.value;
-    else if (id === "product-env") state.productEnv = e.target.value;
+    else if (id === "product-env") {
+      state.productEnv = e.target.value;
+      state.lineageModal = "";
+    }
+    else if (id === "lineage-down-type") {
+      state.lineageDownType = e.target.value;
+      state.lineageModal = "";
+    }
     else if (id === "list-sort") state.listSort = e.target.value;
     else return;
       render();
@@ -1813,6 +1993,12 @@ function bindApp() {
         again.setSelectionRange(len, len);
       }
     }, 80);
+  });
+  app.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.lineageModal) {
+      state.lineageModal = "";
+      render();
+    }
   });
 }
 

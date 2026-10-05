@@ -77,11 +77,14 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "io-src-card") || !strings.Contains(rec.Body.String(), "Data Lineage Overview") {
 		t.Fatal("ui js missing lineage source cards")
 	}
-	if !strings.Contains(rec.Body.String(), "more sources") {
-		t.Fatal("ui js missing +N more sources link")
+	if !strings.Contains(rec.Body.String(), "lineageForEnv") || !strings.Contains(rec.Body.String(), "more sources") {
+		t.Fatal("ui js missing env-scoped lineage or +N more sources")
 	}
 	if !strings.Contains(rec.Body.String(), "1 paused") {
 		t.Fatal("ui js missing paused chip label")
+	}
+	if !strings.Contains(rec.Body.String(), "Fivetran connectors") || !strings.Contains(rec.Body.String(), "Open in Fivetran") || !strings.Contains(rec.Body.String(), "c.dashboard_url") {
+		t.Fatal("ui js missing Fivetran dashboard links")
 	}
 	if !strings.Contains(rec.Body.String(), `class="astro-open"`) || !strings.Contains(rec.Body.String(), "astroLink(d, true)") {
 		t.Fatal("ui js missing collapsed-row Open in Astro control")
@@ -133,6 +136,9 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Composite Score across all dimensions") || !strings.Contains(rec.Body.String(), "data-trend-window") {
 		t.Fatal("ui js missing overview health scoreboard")
+	}
+	if !strings.Contains(rec.Body.String(), "io-trend-seg") || !strings.Contains(rec.Body.String(), "warehouse daily health snapshot") {
+		t.Fatal("ui js missing warehouse health trend")
 	}
 	if !strings.Contains(rec.Body.String(), `catalogSelect("product-env"`) || !strings.Contains(rec.Body.String(), `envFilter: "production"`) {
 		t.Fatal("ui js missing product environment filter defaulting to production")
