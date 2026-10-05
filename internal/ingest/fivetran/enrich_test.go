@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/inorbit/inorbit/internal/domain"
+	"github.com/inorbit/inorbit/internal/pipeline"
 )
 
 func TestEnrichUpstreamGroupsBySchemaAndType(t *testing.T) {
@@ -13,8 +14,8 @@ func TestEnrichUpstreamGroupsBySchemaAndType(t *testing.T) {
 		{Name: "FIVETRAN_DB.ORDERS", Type: "fivetran_db", Status: "UNKNOWN"},
 	}
 	conns := []domain.Connector{
-		{Schema: "orders", Service: "google_sheets", Status: "SUCCESS"},
-		{Schema: "orders", Service: "google_sheets", Status: "SUCCESS", Paused: true},
+		{Schema: "orders", Service: "google_sheets", Status: "SUCCESS", DashboardURL: "https://fivetran.com/dashboard/connectors/sheet-1"},
+		{Schema: "orders", Service: "google_sheets", Status: "SUCCESS", Paused: true, DashboardURL: "https://fivetran.com/dashboard/connectors/sheet-2"},
 		{Schema: "orders", Service: "s3", Status: "SUCCESS"},
 		{Schema: "orders", Service: "salesforce", Status: "SUCCESS"},
 		{Schema: "orders", Service: "postgres", Status: "SUCCESS", Paused: true},
@@ -45,6 +46,40 @@ func TestEnrichUpstreamGroupsBySchemaAndType(t *testing.T) {
 	}
 	if sheets.Name != "orders" {
 		t.Fatalf("generic fivetran_db node should title from schema, got %q", sheets.Name)
+	}
+	if sheets.DashboardURL != "https://fivetran.com/dashboard/connectors/sheet-1" {
+		t.Fatalf("lineage chip should keep a Fivetran dashboard URL %+v", sheets)
+	}
+}
+
+func TestEnrichSplitsProdAndStage(t *testing.T) {
+	nodes := []domain.LineageNode{
+		{Name: "orders", Type: "fivetran_db"},
+	}
+	conns := []domain.Connector{
+		{Schema: "orders", Service: "postgres", Status: "SUCCESS", GroupName: "prod"},
+		{Schema: "orders", Service: "postgres", Status: "SUCCESS", GroupName: "prod"},
+		{Schema: "orders", Service: "postgres", Status: "FAILED", GroupName: "stage"},
+		{Schema: "orders", Service: "postgres", Status: "SUCCESS", GroupName: "snowflake_preprod"},
+	}
+	got := EnrichUpstream(nodes, conns)
+	if len(got) != 2 {
+		t.Fatalf("len %d %+v", len(got), got)
+	}
+	var prod, preprod domain.LineageNode
+	for _, n := range got {
+		switch pipeline.EnvKind(n.GroupName) {
+		case pipeline.EnvProduction:
+			prod = n
+		case pipeline.EnvPreprod:
+			preprod = n
+		}
+	}
+	if prod.ConnectionCount != 2 || prod.ConnectorType != "Postgres" {
+		t.Fatalf("prod %+v", prod)
+	}
+	if preprod.ConnectionCount != 2 {
+		t.Fatalf("preprod should merge stage + snowflake_preprod, got %+v", preprod)
 	}
 }
 

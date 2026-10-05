@@ -216,6 +216,8 @@ func materializeLineage(raw config.DemoLineage, p domain.DataProduct, now time.T
 			ConnectorType:    n.ConnectorType,
 			ConnectionCount:  n.ConnectionCount,
 			PausedCount:      n.PausedCount,
+			GroupName:        n.GroupName,
+			DashboardURL:     n.DashboardURL,
 		})
 	}
 	down := make([]domain.LineageNode, 0, len(raw.DownstreamConsumers))
@@ -230,6 +232,22 @@ func materializeLineage(raw config.DemoLineage, p domain.DataProduct, now time.T
 			}
 		}
 	}
+	saCount := raw.ServiceAccountCount
+	if saCount == 0 {
+		for _, n := range down {
+			if strings.EqualFold(n.Type, "service_account") {
+				saCount++
+			}
+		}
+	}
+	cgCount := raw.ConsumerGroupCount
+	if cgCount == 0 {
+		for _, n := range down {
+			if strings.EqualFold(n.Type, "consumer_group") {
+				cgCount++
+			}
+		}
+	}
 	return domain.Lineage{
 		DataProductID:         p.ID,
 		DataProductName:       p.Name,
@@ -240,10 +258,11 @@ func materializeLineage(raw config.DemoLineage, p domain.DataProduct, now time.T
 		DownstreamConsumers:   down,
 		DirectDownstreamCount: len(down),
 		DirectDPConsumerCount: dpCount,
-		ServiceAccountCount:   raw.ServiceAccountCount,
-		ConsumerGroupCount:    raw.ConsumerGroupCount,
+		ServiceAccountCount:   saCount,
+		ConsumerGroupCount:    cgCount,
 		BlastRadiusCount:      raw.BlastRadiusCount,
 		BlastRadiusScore:      raw.BlastRadiusScore,
+		MartSchemas:           append([]string(nil), raw.MartSchemas...),
 		ComputedAt:            now,
 	}
 }

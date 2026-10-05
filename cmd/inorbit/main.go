@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 	"github.com/inorbit/inorbit/internal/engine"
 	"github.com/inorbit/inorbit/internal/ingest/astro"
 	"github.com/inorbit/inorbit/internal/ingest/fivetran"
+	"github.com/inorbit/inorbit/internal/ingest/healthsnap"
 	"github.com/inorbit/inorbit/internal/ingest/lineage"
 	"github.com/inorbit/inorbit/internal/ingest/quality"
 	"github.com/inorbit/inorbit/internal/store"
@@ -40,6 +42,7 @@ type liveAirflow struct {
 	quality   *quality.Snowflake
 	lineage   domain.QualityTable
 	pipeline  domain.QualityTable
+	health    domain.QualityTable
 	products  []domain.DataProduct
 	extra     map[string]string
 	ftExtra   map[string]string
@@ -207,6 +210,7 @@ func mustLive(lg *log.Logger, st *store.Memory, configPath string) *liveAirflow 
 		quality:  sf,
 		lineage:  cfg.LineageTable(),
 		pipeline: cfg.PipelineTable(),
+		health:   cfg.HealthSnapshotTable(),
 		products: products,
 		extra:    cfg.DAGMap(),
 		ftExtra:  cfg.FivetranMap(),
@@ -265,6 +269,12 @@ func runLiveStartup(ctx context.Context, lg *log.Logger, st *store.Memory, eng *
 			lg.Printf("startup pipeline mart ingest: %v (took %s)", perr, time.Since(phase).Round(time.Millisecond))
 		} else if live.quality != nil && live.pipeline.Enabled {
 			lg.Printf("startup pipeline mart ingest: %d dag(s) took=%s", pn, time.Since(phase).Round(time.Millisecond))
+		}
+		phase = time.Now()
+		if hn, herr := pollHealthSnapshot(ctx, lg, st, eng, live, now); herr != nil {
+			lg.Printf("startup health snapshot ingest: %v (took %s)", herr, time.Since(phase).Round(time.Millisecond))
+		} else if live.quality != nil && live.health.Enabled {
+			lg.Printf("startup health snapshot ingest: %d product(s) took=%s", hn, time.Since(phase).Round(time.Millisecond))
 		}
 	}()
 	wg.Wait()
@@ -357,6 +367,21 @@ func pollPipelineMart(ctx context.Context, lg *log.Logger, st *store.Memory, eng
 	return len(mapped), nil
 }
 
+func pollHealthSnapshot(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) (int, error) {
+	if live == nil || live.quality == nil || !live.health.Enabled {
+		return 0, nil
+	}
+	rows, err := live.quality.HealthSnapshotRows(ctx, live.health)
+	if err != nil {
+		return 0, err
+	}
+	mapped := healthsnap.Map(rows, live.products)
+	st.SetMartHealth(mapped)
+	eng.Recompute(now)
+	lg.Printf("health snapshot ingest %s: %d product(s) with daily scores (warehouse mart)", describeTable(live.health), len(mapped))
+	return len(mapped), nil
+}
+
 func pollFivetran(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engine.Engine, live *liveAirflow, now time.Time) (int, error) {
 	if live == nil || live.fivetran == nil {
 		return 0, nil
@@ -430,6 +455,7 @@ func loadDemo(lg *log.Logger, st *store.Memory, eng *engine.Engine, now time.Tim
 		ids = append(ids, p.ID)
 	}
 	eng.Recompute(now)
+	seedDemoTrend(st, now)
 	st.TouchAstroRuns(now)
 	st.TouchQuality(now)
 	st.TouchLineage(now)
@@ -483,7 +509,7 @@ func runWorkers(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engi
 			if mode == "demo" {
 				st.TouchQuality(t)
 				st.TouchLineage(t)
-				lg.Printf("quality poll (demo): validation/dbt/lineage/pipeline-mart rows already in the catalog")
+				lg.Printf("quality poll (demo): validation/dbt/lineage/pipeline-mart/health-snapshot rows already in the catalog")
 				continue
 			}
 			if _, err := pollQuality(ctx, lg, st, eng, live, t); err != nil {
@@ -495,6 +521,9 @@ func runWorkers(ctx context.Context, lg *log.Logger, st *store.Memory, eng *engi
 			if _, err := pollPipelineMart(ctx, lg, st, eng, live, t); err != nil {
 				lg.Printf("pipeline mart poll (live): %v", err)
 			}
+			if _, err := pollHealthSnapshot(ctx, lg, st, eng, live, t); err != nil {
+				lg.Printf("health snapshot poll (live): %v", err)
+			}
 		}
 	}
 }
@@ -504,6 +533,39 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func seedDemoTrend(st *store.Memory, now time.Time) {
+	by := map[string][]domain.HealthPoint{}
+	for _, s := range st.AllSnapshots() {
+		sc := s.Health.HealthScore
+		if s.Health.TotalChecks == 0 && sc == 0 {
+			continue
+		}
+		pts := make([]domain.HealthPoint, 0, 90)
+		for d := 90; d >= 1; d-- {
+			v := sc + 1.6*math.Sin(float64(d)/6.5)
+			if v > 100 {
+				v = 100
+			}
+			if v < 0 {
+				v = 0
+			}
+			label := domain.HealthAtRisk
+			if v >= 80 {
+				label = domain.HealthTrusted
+			} else if v >= 60 {
+				label = domain.HealthCaution
+			}
+			pts = append(pts, domain.HealthPoint{
+				At:     now.AddDate(0, 0, -d).UTC(),
+				Score:  v,
+				Status: label,
+			})
+		}
+		by[s.DataProduct.ID] = pts
+	}
+	st.SetMartHealth(by)
 }
 
 func loadDotEnv() {

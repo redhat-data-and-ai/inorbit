@@ -162,9 +162,11 @@ func connectionStatus(conn connectionAPI, succeeded, failed *time.Time) (string,
 		}
 		return "FAILED", errMsg
 	}
-	sync := strings.ToLower(conn.Status.SyncState)
-	if sync == "syncing" || conn.Status.IsHistoricalSync {
-		return "RUNNING", errMsg
+	if len(conn.Status.Tasks) > 0 {
+		if errMsg == "" {
+			errMsg = "Fivetran connector is unhealthy"
+		}
+		return "FAILED", errMsg
 	}
 	if failed != nil && (succeeded == nil || failed.After(*succeeded)) {
 		if errMsg == "" {
@@ -177,6 +179,10 @@ func connectionStatus(conn connectionAPI, succeeded, failed *time.Time) (string,
 			errMsg = "Fivetran setup is incomplete"
 		}
 		return "FAILED", errMsg
+	}
+	sync := strings.ToLower(conn.Status.SyncState)
+	if sync == "syncing" || conn.Status.IsHistoricalSync {
+		return "RUNNING", errMsg
 	}
 	return "SUCCESS", errMsg
 }

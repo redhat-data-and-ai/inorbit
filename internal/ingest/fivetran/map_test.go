@@ -18,6 +18,19 @@ func TestConnectionStatusFailedAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestConnectionStatusSyncingWithTasksIsFailed(t *testing.T) {
+	st, msg := connectionStatus(connectionAPI{
+		Status: connectionStatusAPI{
+			SetupState: "connected",
+			SyncState:  "syncing",
+			Tasks:      []statusNote{{Message: "schema missing"}},
+		},
+	}, nil, nil)
+	if st != "FAILED" || msg != "schema missing" {
+		t.Fatalf("got %s %q", st, msg)
+	}
+}
+
 func TestConnectionStatusSyncing(t *testing.T) {
 	st, _ := connectionStatus(connectionAPI{
 		Status: connectionStatusAPI{SetupState: "connected", SyncState: "syncing"},

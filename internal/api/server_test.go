@@ -208,6 +208,31 @@ func TestSnapshotsAndDemoFreshness(t *testing.T) {
 	if !sawSheets || !sawPaused || !sawSnowpipe {
 		t.Fatalf("demo beta lineage chips %+v", snap.Lineage.UpstreamSources)
 	}
+	var sawDash bool
+	for _, n := range snap.Lineage.UpstreamSources {
+		if n.DashboardURL != "" {
+			sawDash = true
+			break
+		}
+	}
+	if !sawDash {
+		t.Fatal("demo beta lineage missing Fivetran dashboard_url")
+	}
+	var designProd, designStage int
+	for _, n := range snap.Lineage.UpstreamSources {
+		if n.Schema != "orders_design" || n.ConnectorType != "Google Sheets" {
+			continue
+		}
+		if n.GroupName == "prod" {
+			designProd = n.ConnectionCount
+		}
+		if n.GroupName == "stage" {
+			designStage = n.ConnectionCount
+		}
+	}
+	if designProd != 5 || designStage != 1 {
+		t.Fatalf("orders_design should split by env, prod=%d stage=%d %+v", designProd, designStage, snap.Lineage.UpstreamSources)
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/data-products/"+atRisk.ID+"/lineage", nil))

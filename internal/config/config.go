@@ -11,26 +11,28 @@ import (
 )
 
 const (
-	DefaultValidationSchema = "QUALITY"
-	DefaultValidationTable  = "VALIDATION_RESULT"
-	DefaultDBTSchema        = "DBTLOGS"
-	DefaultDBTTable         = "ELEMENTARY_TEST_RESULTS"
-	DefaultLineageDatabase  = "INORBIT_DB"
-	DefaultLineageSchema    = "MARTS"
-	DefaultLineageTable     = "DP_LINEAGE"
-	DefaultPipelineTable    = "PIPELINE_STATUS"
+	DefaultValidationSchema    = "QUALITY"
+	DefaultValidationTable     = "VALIDATION_RESULT"
+	DefaultDBTSchema           = "DBTLOGS"
+	DefaultDBTTable            = "ELEMENTARY_TEST_RESULTS"
+	DefaultLineageDatabase     = "INORBIT_DB"
+	DefaultLineageSchema       = "MARTS"
+	DefaultLineageTable        = "DP_LINEAGE"
+	DefaultPipelineTable       = "PIPELINE_STATUS"
+	DefaultHealthSnapshotTable = "HEALTH_SCORE_SNAPSHOT"
 )
 
 // File is the on-disk live/demo JSON config. ${ENV} values are expanded.
 // Data product ids, DAG maps, and quality tables belong here — not in Go.
 type File struct {
-	Astro        AstroConfig     `json:"astro"`
-	Fivetran     FivetranConfig  `json:"fivetran"`
-	Snowflake    SnowflakeConfig `json:"snowflake"`
-	Lineage      LineageConfig   `json:"lineage"`
-	Pipeline     LineageConfig   `json:"pipeline"`
-	DataProducts []ProductConfig `json:"data_products"`
-	Demo         DemoSnapshot    `json:"demo"`
+	Astro          AstroConfig     `json:"astro"`
+	Fivetran       FivetranConfig  `json:"fivetran"`
+	Snowflake      SnowflakeConfig `json:"snowflake"`
+	Lineage        LineageConfig   `json:"lineage"`
+	Pipeline       LineageConfig   `json:"pipeline"`
+	HealthSnapshot LineageConfig   `json:"health_snapshot"`
+	DataProducts   []ProductConfig `json:"data_products"`
+	Demo           DemoSnapshot    `json:"demo"`
 }
 
 // LineageConfig points at the warehouse lineage mart (not a live Airflow poll).
@@ -107,6 +109,7 @@ type DemoLineage struct {
 	ServiceAccountCount   int               `json:"service_account_count"`
 	ConsumerGroupCount    int               `json:"consumer_group_count"`
 	DirectDPConsumerCount int               `json:"direct_dp_consumer_count"`
+	MartSchemas           []string          `json:"mart_schemas,omitempty"`
 }
 
 type DemoLineageNode struct {
@@ -119,6 +122,8 @@ type DemoLineageNode struct {
 	ConnectorType    string   `json:"connector_type,omitempty"`
 	ConnectionCount  int      `json:"connection_count,omitempty"`
 	PausedCount      int      `json:"paused_count,omitempty"`
+	GroupName        string   `json:"group_name,omitempty"`
+	DashboardURL     string   `json:"dashboard_url,omitempty"`
 }
 
 type DemoConnector struct {
@@ -394,43 +399,38 @@ func firstNonEmpty(vals ...string) string {
 
 // LineageTable is the warehouse mart used for the Lineage tab (not live).
 func (c File) LineageTable() domain.QualityTable {
-	enabled := true
-	if c.Lineage.Enabled != nil {
-		enabled = *c.Lineage.Enabled
-	}
-	db := firstNonEmpty(c.Lineage.Database, DefaultLineageDatabase)
-	schema := firstNonEmpty(c.Lineage.Schema, DefaultLineageSchema)
-	table := firstNonEmpty(c.Lineage.Table, DefaultLineageTable)
-	if db == "" {
-		enabled = false
-	}
-	return domain.QualityTable{
-		Enabled:  enabled,
-		Database: db,
-		Schema:   schema,
-		Table:    table,
-	}
+	return c.martTable(c.Lineage, DefaultLineageTable, false)
 }
 
 // PipelineTable is the warehouse mart used to fill Pipeline when a product's
 // DAGs are not on a listed Airflow deployment.
 func (c File) PipelineTable() domain.QualityTable {
+	return c.martTable(c.Pipeline, DefaultPipelineTable, true)
+}
+
+// HealthSnapshotTable is the warehouse daily health series used for the
+// overview trend (not the 15s SLA clock).
+func (c File) HealthSnapshotTable() domain.QualityTable {
+	return c.martTable(c.HealthSnapshot, DefaultHealthSnapshotTable, true)
+}
+
+func (c File) martTable(block LineageConfig, defaultTable string, inheritLineage bool) domain.QualityTable {
 	enabled := true
-	if c.Pipeline.Enabled != nil {
-		enabled = *c.Pipeline.Enabled
+	if block.Enabled != nil {
+		enabled = *block.Enabled
 	}
-	db := firstNonEmpty(c.Pipeline.Database, c.Lineage.Database, DefaultLineageDatabase)
-	schema := firstNonEmpty(c.Pipeline.Schema, c.Lineage.Schema, DefaultLineageSchema)
-	table := firstNonEmpty(c.Pipeline.Table, DefaultPipelineTable)
+	db, schema := block.Database, block.Schema
+	if inheritLineage {
+		db = firstNonEmpty(db, c.Lineage.Database)
+		schema = firstNonEmpty(schema, c.Lineage.Schema)
+	}
+	db = firstNonEmpty(db, DefaultLineageDatabase)
+	schema = firstNonEmpty(schema, DefaultLineageSchema)
+	table := firstNonEmpty(block.Table, defaultTable)
 	if db == "" {
 		enabled = false
 	}
-	return domain.QualityTable{
-		Enabled:  enabled,
-		Database: db,
-		Schema:   schema,
-		Table:    table,
-	}
+	return domain.QualityTable{Enabled: enabled, Database: db, Schema: schema, Table: table}
 }
 
 // SnowflakeConn merges live.json with env. Config wins when set so the common

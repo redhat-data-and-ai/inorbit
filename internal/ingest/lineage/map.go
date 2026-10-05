@@ -153,6 +153,8 @@ func nodeFrom(v any) (domain.LineageNode, bool) {
 			ConnectorType:    str(t, "connector_type", "CONNECTOR_TYPE"),
 			ConnectionCount:  intVal(first(t, "connection_count", "CONNECTION_COUNT")),
 			PausedCount:      intVal(first(t, "paused_count", "PAUSED_COUNT")),
+			GroupName:        str(t, "group_name", "GROUP_NAME"),
+			DashboardURL:     str(t, "dashboard_url", "DASHBOARD_URL"),
 		}, true
 	default:
 		b, err := json.Marshal(t)
