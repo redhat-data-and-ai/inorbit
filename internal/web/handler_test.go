@@ -22,7 +22,7 @@ func handler(t *testing.T) http.Handler {
 	st := store.New()
 	eng := engine.New(st)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	products, dags, checks, lineageRows, err := demo.Load(now)
+	products, dags, checks, lineageRows, conns, err := demo.Load(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,12 +38,17 @@ func handler(t *testing.T) http.Handler {
 	for _, lin := range lineageRows {
 		byL[lin.DataProductID] = lin
 	}
+	byConn := map[string][]domain.Connector{}
+	for _, c := range conns {
+		byConn[c.DataProductID] = append(byConn[c.DataProductID], c)
+	}
 	for _, p := range products {
 		st.UpsertProduct(p)
 		st.SetDAGs(p.ID, byD[p.ID])
 		st.SetChecks(p.ID, byC[p.ID])
 		st.SetQualitySources(p.ID, quality.ConfigSources(p))
 		st.SetLineage(p.ID, byL[p.ID])
+		st.SetConnectors(p.ID, byConn[p.ID])
 	}
 	eng.Recompute(now)
 	return web.Mount((&api.Server{Store: st, Alerts: alert.New(st, nil)}).Handler())
@@ -69,6 +74,15 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Open in Astro") || !strings.Contains(rec.Body.String(), "d.astro_url") {
 		t.Fatal("ui js missing astro_url column")
 	}
+	if !strings.Contains(rec.Body.String(), "io-src-card") || !strings.Contains(rec.Body.String(), "Data Lineage Overview") {
+		t.Fatal("ui js missing lineage source cards")
+	}
+	if !strings.Contains(rec.Body.String(), "more sources") {
+		t.Fatal("ui js missing +N more sources link")
+	}
+	if !strings.Contains(rec.Body.String(), "1 paused") {
+		t.Fatal("ui js missing paused chip label")
+	}
 	if !strings.Contains(rec.Body.String(), `class="astro-open"`) || !strings.Contains(rec.Body.String(), "astroLink(d, true)") {
 		t.Fatal("ui js missing collapsed-row Open in Astro control")
 	}
@@ -87,8 +101,8 @@ func TestMountServesConsoleAndLeavesAPI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Last Run") || !strings.Contains(rec.Body.String(), "Reliability") {
 		t.Fatal("ui js missing expandable pipeline columns")
 	}
-	if !strings.Contains(rec.Body.String(), "flag custom") || !strings.Contains(rec.Body.String(), ">Astro</th>") {
-		t.Fatal("ui js missing custom badge or Astro column")
+	if !strings.Contains(rec.Body.String(), "flag custom") || !strings.Contains(rec.Body.String(), ">Open</th>") {
+		t.Fatal("ui js missing custom badge or Open column")
 	}
 	if !strings.Contains(rec.Body.String(), "alert-banner") || !strings.Contains(rec.Body.String(), "warnings") {
 		t.Fatal("ui js missing ingest warning banner")
