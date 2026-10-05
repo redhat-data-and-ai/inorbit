@@ -25,6 +25,7 @@ const (
 // Data product ids, DAG maps, and quality tables belong here — not in Go.
 type File struct {
 	Astro        AstroConfig     `json:"astro"`
+	Fivetran     FivetranConfig  `json:"fivetran"`
 	Snowflake    SnowflakeConfig `json:"snowflake"`
 	Lineage      LineageConfig   `json:"lineage"`
 	Pipeline     LineageConfig   `json:"pipeline"`
@@ -64,6 +65,16 @@ type DeploymentConfig struct {
 	AirflowAPIURL string `json:"airflow_api_url"`
 }
 
+// FivetranConfig is the REST API poll for source-aligned connectors.
+// Key and secret stay in env; this block only names those variables.
+type FivetranConfig struct {
+	APIKeyEnv    string   `json:"api_key_env"`
+	APISecretEnv string   `json:"api_secret_env"`
+	BaseURL      string   `json:"base_url"`
+	DashboardURL string   `json:"dashboard_url"`
+	GroupIDs     []string `json:"group_ids"`
+}
+
 type ProductConfig struct {
 	ID           string               `json:"id"`
 	Name         string               `json:"name"`
@@ -73,14 +84,16 @@ type ProductConfig struct {
 	ValidationDB string               `json:"validation_database"`
 	Quality      ProductQualityConfig `json:"quality"`
 	DAGIDs       []string             `json:"dag_ids"`
+	FivetranIDs  []string             `json:"fivetran_connector_ids"`
 }
 
 // DemoSnapshot is in-memory sample pipeline/quality state for -mode=demo.
 // Times are durations before "now" (Go ParseDuration), e.g. "95m", "2h".
 type DemoSnapshot struct {
-	DAGs    []DemoDAG     `json:"dags"`
-	Checks  []DemoCheck   `json:"checks"`
-	Lineage []DemoLineage `json:"lineage"`
+	DAGs       []DemoDAG       `json:"dags"`
+	Checks     []DemoCheck     `json:"checks"`
+	Lineage    []DemoLineage   `json:"lineage"`
+	Connectors []DemoConnector `json:"connectors"`
 }
 
 type DemoLineage struct {
@@ -97,10 +110,31 @@ type DemoLineage struct {
 }
 
 type DemoLineageNode struct {
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Status      string   `json:"status"`
-	HealthScore *float64 `json:"health_score"`
+	Name             string   `json:"name"`
+	Type             string   `json:"type"`
+	Status           string   `json:"status"`
+	HealthScore      *float64 `json:"health_score"`
+	Schema           string   `json:"schema,omitempty"`
+	ConnectorService string   `json:"connector_service,omitempty"`
+	ConnectorType    string   `json:"connector_type,omitempty"`
+	ConnectionCount  int      `json:"connection_count,omitempty"`
+	PausedCount      int      `json:"paused_count,omitempty"`
+}
+
+type DemoConnector struct {
+	DataProductID string  `json:"data_product_id"`
+	ID            string  `json:"connection_id"`
+	Schema        string  `json:"schema"`
+	Service       string  `json:"service"`
+	GroupName     string  `json:"group_name"`
+	GroupID       string  `json:"group_id"`
+	Paused        bool    `json:"paused"`
+	Status        string  `json:"status"`
+	DashboardURL  string  `json:"dashboard_url"`
+	SucceededAgo  string  `json:"succeeded_ago"`
+	FailedAgo     string  `json:"failed_ago"`
+	IntervalMins  float64 `json:"sync_frequency_mins"`
+	TriggerType   string  `json:"trigger_type"`
 }
 
 type DemoDAG struct {
@@ -168,6 +202,12 @@ func Load(path string) (File, error) {
 	}
 	if cfg.Astro.TokenEnv == "" {
 		cfg.Astro.TokenEnv = "ASTRO_TOKEN"
+	}
+	if cfg.Fivetran.APIKeyEnv == "" {
+		cfg.Fivetran.APIKeyEnv = "FIVETRAN_API_KEY"
+	}
+	if cfg.Fivetran.APISecretEnv == "" {
+		cfg.Fivetran.APISecretEnv = "FIVETRAN_API_SECRET"
 	}
 	if cfg.Snowflake.UserEnv == "" {
 		cfg.Snowflake.UserEnv = "SNOWFLAKE_USER"
@@ -266,6 +306,49 @@ func (c File) DAGMap() map[string]string {
 		}
 	}
 	return out
+}
+
+// FivetranMap is an optional explicit connector id → data_product_id overlay.
+func (c File) FivetranMap() map[string]string {
+	out := map[string]string{}
+	for _, p := range c.DataProducts {
+		id := p.ID
+		if id == "" {
+			id = p.Name
+		}
+		id = strings.ToLower(strings.TrimSpace(id))
+		for _, connID := range p.FivetranIDs {
+			connID = strings.TrimSpace(connID)
+			if connID != "" {
+				out[connID] = id
+			}
+		}
+	}
+	return out
+}
+
+func (c File) FivetranKey() string {
+	if v := strings.TrimSpace(os.Getenv(c.Fivetran.APIKeyEnv)); v != "" {
+		return v
+	}
+	for _, k := range []string{"FIVETRAN_API_KEY", "FIVETRAN_KEY"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (c File) FivetranSecret() string {
+	if v := strings.TrimSpace(os.Getenv(c.Fivetran.APISecretEnv)); v != "" {
+		return v
+	}
+	for _, k := range []string{"FIVETRAN_API_SECRET", "FIVETRAN_SECRET"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func defaultDPDatabase(id string) string {

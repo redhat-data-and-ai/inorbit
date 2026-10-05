@@ -22,7 +22,7 @@ func setup(t *testing.T) (http.Handler, []domain.DataProduct, []domain.DAG) {
 	st := store.New()
 	eng := engine.New(st)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	products, dags, checks, lineageRows, err := demo.Load(now)
+	products, dags, checks, lineageRows, conns, err := demo.Load(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,12 +38,17 @@ func setup(t *testing.T) (http.Handler, []domain.DataProduct, []domain.DAG) {
 	for _, lin := range lineageRows {
 		byL[lin.DataProductID] = lin
 	}
+	byConn := map[string][]domain.Connector{}
+	for _, c := range conns {
+		byConn[c.DataProductID] = append(byConn[c.DataProductID], c)
+	}
 	for _, p := range products {
 		st.UpsertProduct(p)
 		st.SetDAGs(p.ID, byD[p.ID])
 		st.SetChecks(p.ID, byC[p.ID])
 		st.SetQualitySources(p.ID, quality.ConfigSources(p))
 		st.SetLineage(p.ID, byL[p.ID])
+		st.SetConnectors(p.ID, byConn[p.ID])
 	}
 	eng.Recompute(now)
 	return (&api.Server{Store: st, Alerts: alert.New(st, nil)}).Handler(), products, dags
@@ -131,7 +136,16 @@ func TestSnapshotsAndDemoFreshness(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &pipe); err != nil {
 		t.Fatal(err)
 	}
-	if len(pipe) == 0 || pipe[0].AstroURL != atRiskDAG.AstroURL {
+	if len(pipe) == 0 {
+		t.Fatal("alpha pipeline empty")
+	}
+	var sawURL bool
+	for _, row := range pipe {
+		if row.AstroURL == atRiskDAG.AstroURL {
+			sawURL = true
+		}
+	}
+	if !sawURL {
 		t.Fatalf("astro_url %+v want %q", pipe, atRiskDAG.AstroURL)
 	}
 	if pipe[0].FrequencyDisplay != "Every 1 hour" || pipe[0].PipelineType != "DAG" {
@@ -157,6 +171,42 @@ func TestSnapshotsAndDemoFreshness(t *testing.T) {
 	}
 	if pipe[0].AstroURL != healthyDAG.AstroURL {
 		t.Fatalf("healthy astro_url %q want %q", pipe[0].AstroURL, healthyDAG.AstroURL)
+	}
+	for _, row := range pipe {
+		if row.PipelineType == domain.PipelineTypeFivetran {
+			t.Fatal("Fivetran connectors should not be pipeline rows")
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/data-products/"+healthy.ID, nil))
+	if rec.Code != 200 {
+		t.Fatalf("product %d %s", rec.Code, rec.Body.String())
+	}
+	var snap domain.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Connectors) < 2 {
+		t.Fatalf("demo beta connectors %+v", snap.Connectors)
+	}
+	var sawSheets, sawPaused, sawSnowpipe bool
+	for _, n := range snap.Lineage.UpstreamSources {
+		if n.Type == "snowpipe_db" {
+			sawSnowpipe = true
+			if n.ConnectorService != "" {
+				t.Fatalf("snowpipe should stay generic %+v", n)
+			}
+		}
+		if n.ConnectorType == "Google Sheets" && n.ConnectionCount >= 3 {
+			sawSheets = true
+		}
+		if n.PausedCount > 0 && n.ConnectorService != "" {
+			sawPaused = true
+		}
+	}
+	if !sawSheets || !sawPaused || !sawSnowpipe {
+		t.Fatalf("demo beta lineage chips %+v", snap.Lineage.UpstreamSources)
 	}
 
 	rec = httptest.NewRecorder()

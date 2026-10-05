@@ -119,6 +119,8 @@ func displayName(src domain.SourceType) string {
 		return "dbt / Elementary"
 	case domain.SrcAstroFreshness, domain.SrcAstroPipeline:
 		return "Astro"
+	case domain.SrcFivetranFreshness, domain.SrcFivetranPipeline:
+		return "Fivetran"
 	default:
 		return string(src)
 	}

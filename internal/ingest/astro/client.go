@@ -565,7 +565,7 @@ func normalize(dep Deployment, dp domain.DataProduct, raw dagAPI, run, lastSucce
 		n := d.LastSuccessAt.Add(time.Duration(*d.IntervalMins) * time.Minute)
 		d.NextExpectedAt = &n
 	}
-	d.PipelineType = "DAG"
+	d.PipelineType = domain.PipelineTypeDAG
 	if strings.TrimSpace(d.FrequencyDisplay) == "" {
 		d.FrequencyDisplay = pipeline.FrequencyDisplay(d.IntervalMins)
 	}

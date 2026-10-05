@@ -72,10 +72,17 @@ const (
 type SourceType string
 
 const (
-	SrcValidation     SourceType = "VALIDATION"
-	SrcDBTTest        SourceType = "DBT_TEST"
-	SrcAstroFreshness SourceType = "ASTRO_FRESHNESS"
-	SrcAstroPipeline  SourceType = "ASTRO_PIPELINE"
+	SrcValidation        SourceType = "VALIDATION"
+	SrcDBTTest           SourceType = "DBT_TEST"
+	SrcAstroFreshness    SourceType = "ASTRO_FRESHNESS"
+	SrcAstroPipeline     SourceType = "ASTRO_PIPELINE"
+	SrcFivetranFreshness SourceType = "FIVETRAN_FRESHNESS"
+	SrcFivetranPipeline  SourceType = "FIVETRAN_PIPELINE"
+)
+
+const (
+	PipelineTypeDAG      = "DAG"
+	PipelineTypeFivetran = "FIVETRAN"
 )
 
 type Audience string
@@ -155,7 +162,7 @@ type DAG struct {
 	AstroURL      string     `json:"astro_url,omitempty"`
 	TriggerType   string     `json:"trigger_type,omitempty"`
 	LastSuccessAt *time.Time `json:"last_successful_at,omitempty"`
-	// PipelineType is always DAG for Astro (marts.pipeline_status.pipeline_type).
+	// PipelineType is DAG for Astro and FIVETRAN for Fivetran connections.
 	PipelineType         string   `json:"pipeline_type,omitempty"`
 	FrequencyDisplay     string   `json:"dag_frequency_display,omitempty"`
 	Runs7d               int      `json:"dag_runs_7d"`
@@ -187,6 +194,7 @@ type HealthStatus struct {
 	FailedChecks           int         `json:"failed_checks"`
 	WarningChecks          int         `json:"warning_checks"`
 	AstroCheckCount        int         `json:"astro_check_count"`
+	FivetranCheckCount     int         `json:"fivetran_check_count"`
 	ValidationCheckCount   int         `json:"validation_check_count"`
 	StatusMessage          string      `json:"status_message"`
 	EvaluatedAt            time.Time   `json:"evaluated_at"`
@@ -233,11 +241,42 @@ type Subscription struct {
 }
 
 // LineageNode is one upstream source or downstream consumer from MARTS.DP_LINEAGE.
+// Fivetran chips add connector_service / connection_count / paused_count when live
+// ingest has grouped the node by (schema, connector type).
 type LineageNode struct {
-	Name        string   `json:"name"`
-	Type        string   `json:"type,omitempty"`
-	Status      string   `json:"status,omitempty"`
-	HealthScore *float64 `json:"health_score,omitempty"`
+	Name             string   `json:"name"`
+	Type             string   `json:"type,omitempty"`
+	Status           string   `json:"status,omitempty"`
+	HealthScore      *float64 `json:"health_score,omitempty"`
+	Schema           string   `json:"schema,omitempty"`
+	ConnectorService string   `json:"connector_service,omitempty"`
+	ConnectorType    string   `json:"connector_type,omitempty"`
+	ConnectionCount  int      `json:"connection_count,omitempty"`
+	PausedCount      int      `json:"paused_count,omitempty"`
+}
+
+// Connector is one live Fivetran connection matched to a source-aligned product.
+type Connector struct {
+	DataProductID   string     `json:"data_product_id"`
+	DataProductName string     `json:"data_product_name"`
+	ID              string     `json:"connection_id"`
+	Schema          string     `json:"schema"`
+	Service         string     `json:"service"`
+	ServiceName     string     `json:"service_name,omitempty"`
+	GroupName       string     `json:"group_name,omitempty"`
+	GroupID         string     `json:"group_id,omitempty"`
+	Paused          bool       `json:"paused"`
+	Status          string     `json:"status,omitempty"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
+	DashboardURL    string     `json:"dashboard_url,omitempty"`
+	SucceededAt     *time.Time `json:"succeeded_at,omitempty"`
+	FailedAt        *time.Time `json:"failed_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	IntervalMins    *float64   `json:"sync_frequency_mins,omitempty"`
+	SLAMinutes      *float64   `json:"sla_minutes,omitempty"`
+	NextExpectedAt  *time.Time `json:"next_expected_at,omitempty"`
+	TriggerType     string     `json:"trigger_type,omitempty"`
 }
 
 // Lineage is warehouse mart lineage for one data product. Not live-polled from Airflow.
@@ -281,6 +320,7 @@ type Snapshot struct {
 	Health         HealthStatus     `json:"health"`
 	Freshness      FreshnessSLA     `json:"freshness"`
 	Pipeline       []PipelineStatus `json:"pipeline"`
+	Connectors     []Connector      `json:"connectors,omitempty"`
 	Quality        []Check          `json:"quality"`
 	QualitySources QualitySources   `json:"quality_sources"`
 	Lineage        Lineage          `json:"lineage"`
@@ -295,6 +335,7 @@ type PollMeta struct {
 	QualityPollSeconds    int           `json:"quality_poll_seconds"`
 	LastAstroRunPoll      time.Time     `json:"last_astro_run_poll,omitempty"`
 	LastAstroTagPoll      time.Time     `json:"last_astro_tag_poll,omitempty"`
+	LastFivetranPoll      time.Time     `json:"last_fivetran_poll,omitempty"`
 	LastQualityPoll       time.Time     `json:"last_quality_poll,omitempty"`
 	LastLineagePoll       time.Time     `json:"last_lineage_poll,omitempty"`
 	LastClockTick         time.Time     `json:"last_clock_tick,omitempty"`

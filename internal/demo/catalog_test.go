@@ -10,7 +10,7 @@ import (
 
 func TestLoadReadsCatalogJSON(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	products, dags, checks, lineageRows, err := demo.Load(now)
+	products, dags, checks, lineageRows, conns, err := demo.Load(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,5 +62,8 @@ func TestLoadReadsCatalogJSON(t *testing.T) {
 	}
 	if !sawUp {
 		t.Fatalf("demo alpha should have upstream sources: %+v", lineageRows)
+	}
+	if len(conns) < 2 {
+		t.Fatalf("demo connectors %d", len(conns))
 	}
 }

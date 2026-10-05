@@ -5,13 +5,12 @@ import (
 	"time"
 
 	"github.com/inorbit/inorbit/internal/domain"
-	"github.com/inorbit/inorbit/internal/engine"
 	"github.com/inorbit/inorbit/internal/store"
 )
 
-// Apply writes ingested DAGs into the snapshot store and recomputes.
+// Apply writes ingested DAGs into the snapshot store.
 // Products with no matching DAGs keep an empty pipeline list.
-func Apply(st *store.Memory, eng *engine.Engine, dags []domain.DAG, now time.Time) {
+func Apply(st *store.Memory, dags []domain.DAG) {
 	byDP := map[string][]domain.DAG{}
 	for _, d := range dags {
 		byDP[d.DataProductID] = append(byDP[d.DataProductID], d)
@@ -19,19 +18,15 @@ func Apply(st *store.Memory, eng *engine.Engine, dags []domain.DAG, now time.Tim
 	for _, p := range st.Products() {
 		st.SetDAGs(p.ID, dedupeLatest(byDP[p.ID]))
 	}
-	eng.Recompute(now)
 }
 
-// MergeLiveAndMart prefers live Airflow rows, then adds warehouse-mart DAGs
-// for products (or dag_ids) the listed deployments did not return.
+// MergeLiveAndMart prefers live Airflow rows, then adds warehouse-mart
+// pipelines the live poll did not return.
 func MergeLiveAndMart(live, mart []domain.DAG) []domain.DAG {
-	type key struct{ product, dag string }
-	seen := map[key]struct{}{}
-	k := func(d domain.DAG) key {
-		return key{
-			product: strings.ToLower(strings.TrimSpace(d.DataProductID)),
-			dag:     strings.ToLower(strings.TrimSpace(d.DAGID)),
-		}
+	seen := map[string]struct{}{}
+	k := func(d domain.DAG) string {
+		product := strings.ToLower(strings.TrimSpace(d.DataProductID))
+		return product + "\x00" + pipelineIdentity(d)
 	}
 	out := make([]domain.DAG, 0, len(live)+len(mart))
 	for _, d := range live {
@@ -55,13 +50,14 @@ func MergeLiveAndMart(live, mart []domain.DAG) []domain.DAG {
 	return out
 }
 
-// dedupeLatest keeps one row per dag_id: the deployment whose latest run
-// is newest. Empty runs lose to a run.
+// dedupeLatest keeps one row per pipeline identity. Airflow still collapses
+// the same dag_id across deployments to the newest run. Fivetran keeps one
+// row per destination + schema so prod and stage connectors both stay.
 func dedupeLatest(dags []domain.DAG) []domain.DAG {
 	best := map[string]domain.DAG{}
 	order := make([]string, 0)
 	for _, d := range dags {
-		key := strings.ToLower(strings.TrimSpace(d.DAGID))
+		key := pipelineIdentity(d)
 		prev, ok := best[key]
 		if !ok {
 			order = append(order, key)
@@ -77,6 +73,18 @@ func dedupeLatest(dags []domain.DAG) []domain.DAG {
 		out = append(out, best[k])
 	}
 	return out
+}
+
+func pipelineIdentity(d domain.DAG) string {
+	kind := strings.ToUpper(strings.TrimSpace(d.PipelineType))
+	if kind == "" {
+		kind = domain.PipelineTypeDAG
+	}
+	id := strings.ToLower(strings.TrimSpace(d.DAGID))
+	if kind == domain.PipelineTypeFivetran {
+		return kind + "\x00" + strings.ToLower(strings.TrimSpace(d.DeploymentName)) + "\x00" + id
+	}
+	return kind + "\x00" + id
 }
 
 func dagNewer(a, b domain.DAG) bool {

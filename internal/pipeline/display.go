@@ -149,7 +149,7 @@ func packRel(n, ok int) (int, *float64, string) {
 func EnrichDAG(d *domain.DAG) {
 	ApplySLADefaults(d)
 	if d.PipelineType == "" {
-		d.PipelineType = "DAG"
+		d.PipelineType = domain.PipelineTypeDAG
 	}
 	if d.FrequencyDisplay == "" {
 		d.FrequencyDisplay = FrequencyDisplay(d.IntervalMins)

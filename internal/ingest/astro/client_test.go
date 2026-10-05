@@ -138,7 +138,8 @@ func TestFetchForProductsFromMockAirflow(t *testing.T) {
 		st.UpsertProduct(p)
 	}
 	eng := engine.New(st)
-	astro.Apply(st, eng, dags, time.Now().UTC())
+	astro.Apply(st, dags)
+	eng.Recompute(time.Now().UTC())
 
 	snap, ok := st.Snapshot("catalog")
 	if !ok {
@@ -268,4 +269,3 @@ func TestFetchForProductsDagRunTimeout(t *testing.T) {
 		t.Fatalf("want catalog_hourly kept after run timeout, got %+v", dags)
 	}
 }
-

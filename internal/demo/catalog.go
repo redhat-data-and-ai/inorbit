@@ -10,6 +10,7 @@ import (
 
 	"github.com/inorbit/inorbit/internal/config"
 	"github.com/inorbit/inorbit/internal/domain"
+	"github.com/inorbit/inorbit/internal/ingest/fivetran"
 )
 
 // Resolve finds the demo catalog JSON. Prefer an explicit path, then
@@ -49,23 +50,23 @@ func catalogCandidates() []string {
 }
 
 // Load reads configs/demo.json (or INORBIT_CONFIG) relative to now.
-func Load(now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, []domain.Lineage, error) {
+func Load(now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, []domain.Lineage, []domain.Connector, error) {
 	path, err := Resolve("")
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	return LoadFile(path, now)
 }
 
 // LoadFile materializes the demo snapshot from a config file.
-func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, []domain.Lineage, error) {
+func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, []domain.Check, []domain.Lineage, []domain.Connector, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	products := cfg.Products()
 	if len(products) == 0 {
-		return nil, nil, nil, nil, fmt.Errorf("%s: no data_products", path)
+		return nil, nil, nil, nil, nil, fmt.Errorf("%s: no data_products", path)
 	}
 	byID := map[string]domain.DataProduct{}
 	for _, p := range products {
@@ -74,9 +75,12 @@ func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, [
 	now = now.UTC()
 	dags := make([]domain.DAG, 0, len(cfg.Demo.DAGs))
 	for i, raw := range cfg.Demo.DAGs {
+		if strings.EqualFold(raw.PipelineType, domain.PipelineTypeFivetran) {
+			continue
+		}
 		d, err := materializeDAG(raw, byID, now)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("%s: demo.dags[%d]: %w", path, i, err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("%s: demo.dags[%d]: %w", path, i, err)
 		}
 		dags = append(dags, d)
 	}
@@ -84,7 +88,7 @@ func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, [
 	for i, raw := range cfg.Demo.Checks {
 		c, err := materializeCheck(raw, byID, now)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("%s: demo.checks[%d]: %w", path, i, err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("%s: demo.checks[%d]: %w", path, i, err)
 		}
 		checks = append(checks, c)
 	}
@@ -96,7 +100,15 @@ func LoadFile(path string, now time.Time) ([]domain.DataProduct, []domain.DAG, [
 	for _, p := range products {
 		lineage = append(lineage, materializeLineage(byLin[p.ID], p, now))
 	}
-	return products, dags, checks, lineage, nil
+	conns := make([]domain.Connector, 0, len(cfg.Demo.Connectors))
+	for i, raw := range cfg.Demo.Connectors {
+		c, err := materializeConnector(raw, byID, now)
+		if err != nil {
+			return nil, nil, nil, nil, nil, fmt.Errorf("%s: demo.connectors[%d]: %w", path, i, err)
+		}
+		conns = append(conns, c)
+	}
+	return products, dags, checks, lineage, conns, nil
 }
 
 func materializeDAG(raw config.DemoDAG, products map[string]domain.DataProduct, now time.Time) (domain.DAG, error) {
@@ -194,7 +206,17 @@ func materializeCheck(raw config.DemoCheck, products map[string]domain.DataProdu
 func materializeLineage(raw config.DemoLineage, p domain.DataProduct, now time.Time) domain.Lineage {
 	up := make([]domain.LineageNode, 0, len(raw.UpstreamSources))
 	for _, n := range raw.UpstreamSources {
-		up = append(up, domain.LineageNode{Name: n.Name, Type: n.Type, Status: n.Status, HealthScore: n.HealthScore})
+		up = append(up, domain.LineageNode{
+			Name:             n.Name,
+			Type:             n.Type,
+			Status:           n.Status,
+			HealthScore:      n.HealthScore,
+			Schema:           n.Schema,
+			ConnectorService: n.ConnectorService,
+			ConnectorType:    n.ConnectorType,
+			ConnectionCount:  n.ConnectionCount,
+			PausedCount:      n.PausedCount,
+		})
 	}
 	down := make([]domain.LineageNode, 0, len(raw.DownstreamConsumers))
 	for _, n := range raw.DownstreamConsumers {
@@ -237,4 +259,58 @@ func parseAgo(now time.Time, spec string) (*time.Time, error) {
 	}
 	t := now.Add(-d)
 	return &t, nil
+}
+
+func materializeConnector(raw config.DemoConnector, products map[string]domain.DataProduct, now time.Time) (domain.Connector, error) {
+	id := strings.ToLower(strings.TrimSpace(raw.DataProductID))
+	p, ok := products[id]
+	if !ok {
+		return domain.Connector{}, fmt.Errorf("unknown data_product_id %q", raw.DataProductID)
+	}
+	succeeded, err := parseAgo(now, raw.SucceededAgo)
+	if err != nil {
+		return domain.Connector{}, err
+	}
+	failed, err := parseAgo(now, raw.FailedAgo)
+	if err != nil {
+		return domain.Connector{}, err
+	}
+	status := strings.ToUpper(strings.TrimSpace(raw.Status))
+	if status == "" {
+		status = "SUCCESS"
+	}
+	c := domain.Connector{
+		DataProductID:   p.ID,
+		DataProductName: p.Name,
+		ID:              raw.ID,
+		Schema:          raw.Schema,
+		Service:         raw.Service,
+		ServiceName:     fivetran.ServiceName(raw.Service),
+		GroupName:       raw.GroupName,
+		GroupID:         raw.GroupID,
+		Paused:          raw.Paused,
+		Status:          status,
+		DashboardURL:    raw.DashboardURL,
+		SucceededAt:     succeeded,
+		FailedAt:        failed,
+		CompletedAt:     succeeded,
+		TriggerType:     raw.TriggerType,
+	}
+	if c.GroupName == "" {
+		c.GroupName = "prod"
+	}
+	if raw.IntervalMins > 0 {
+		v := raw.IntervalMins
+		c.IntervalMins = &v
+	}
+	if status == "FAILED" && failed != nil {
+		c.CompletedAt = failed
+	}
+	if c.CompletedAt != nil {
+		c.StartedAt = c.CompletedAt
+	}
+	d := fivetran.AsDAG(c)
+	c.SLAMinutes = d.SLAMinutes
+	c.NextExpectedAt = d.NextExpectedAt
+	return c, nil
 }

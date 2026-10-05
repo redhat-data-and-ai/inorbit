@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/inorbit/inorbit/internal/domain"
+	"github.com/inorbit/inorbit/internal/ingest/fivetran"
 	"github.com/inorbit/inorbit/internal/pipeline"
 	"github.com/inorbit/inorbit/internal/score"
 	"github.com/inorbit/inorbit/internal/store"
@@ -24,9 +26,21 @@ func (e *Engine) Recompute(now time.Time) {
 	now = now.UTC()
 	products := e.Store.Products()
 	for _, dp := range products {
-		dags := e.Store.DAGs(dp.ID)
+		stored := e.Store.DAGs(dp.ID)
+		conns := e.Store.Connectors(dp.ID)
+		dags := make([]domain.DAG, 0, len(stored))
+		scoreDAGs := make([]domain.DAG, 0, len(stored)+len(conns))
+		for _, d := range stored {
+			if strings.EqualFold(d.PipelineType, domain.PipelineTypeFivetran) {
+				scoreDAGs = append(scoreDAGs, d)
+				continue
+			}
+			dags = append(dags, d)
+			scoreDAGs = append(scoreDAGs, d)
+		}
+		scoreDAGs = append(scoreDAGs, fivetran.AsDAGs(conns)...)
 		rawChecks := e.Store.Checks(dp.ID)
-		checks := make([]domain.Check, 0, len(rawChecks)+len(dags))
+		checks := make([]domain.Check, 0, len(rawChecks)+len(scoreDAGs))
 		for _, c := range rawChecks {
 			c.DataProductID = dp.ID
 			c.DataProductName = dp.Name
@@ -34,20 +48,21 @@ func (e *Engine) Recompute(now time.Time) {
 		}
 
 		pipe := make([]domain.PipelineStatus, 0, len(dags))
-		hasProd := pipeline.HasProduction(dags)
-		for _, dag := range dags {
+		hasProd := pipeline.HasProduction(scoreDAGs)
+		for _, dag := range scoreDAGs {
 			pipeline.EnrichDAG(&dag)
 			ev := pipeline.Tick(dag, now)
-			ps := domain.PipelineStatus{
-				DAG:                         dag,
-				DAGFreshnessStatus:          ev.FreshnessLabel,
-				DAGPipelineSLAStatus:        ev.PipelineSLA,
-				DAGOverallStatus:            ev.Overall,
-				DAGOverallStatusDescription: ev.Description,
-				DAGDataAgeMins:              ev.DataAgeMins,
-				ComputedAt:                  now,
+			if !strings.EqualFold(dag.PipelineType, domain.PipelineTypeFivetran) {
+				pipe = append(pipe, domain.PipelineStatus{
+					DAG:                         dag,
+					DAGFreshnessStatus:          ev.FreshnessLabel,
+					DAGPipelineSLAStatus:        ev.PipelineSLA,
+					DAGOverallStatus:            ev.Overall,
+					DAGOverallStatusDescription: ev.Description,
+					DAGDataAgeMins:              ev.DataAgeMins,
+					ComputedAt:                  now,
+				})
 			}
-			pipe = append(pipe, ps)
 			if pipeline.ScoreDAG(dag, hasProd) {
 				checks = append(checks, virtualChecks(dp, dag, ev, now)...)
 			}
@@ -59,7 +74,7 @@ func (e *Engine) Recompute(now time.Time) {
 
 		health := score.Evaluate([]domain.DataProduct{dp}, checks, e.Score)[0]
 		health.EvaluatedAt = now
-		fresh := pipeline.RollupFreshness(dp, dags, now)
+		fresh := pipeline.RollupFreshness(dp, scoreDAGs, now)
 		lin := e.Store.Lineage(dp.ID)
 		lin.DataProductID = dp.ID
 		lin.DataProductName = dp.Name
@@ -69,12 +84,17 @@ func (e *Engine) Recompute(now time.Time) {
 		if lin.DownstreamConsumers == nil {
 			lin.DownstreamConsumers = []domain.LineageNode{}
 		}
+		if fivetran.SourceAligned(dp.Type) {
+			lin.UpstreamSources = fivetran.EnrichUpstream(lin.UpstreamSources, conns)
+			lin.UpstreamCount = len(lin.UpstreamSources)
+		}
 
 		e.Store.PutSnapshot(domain.Snapshot{
 			DataProduct:    dp,
 			Health:         health,
 			Freshness:      fresh,
 			Pipeline:       pipe,
+			Connectors:     conns,
 			Quality:        checks,
 			QualitySources: e.Store.QualitySources(dp.ID),
 			Lineage:        lin,
@@ -85,6 +105,12 @@ func (e *Engine) Recompute(now time.Time) {
 }
 
 func virtualChecks(dp domain.DataProduct, dag domain.DAG, ev pipeline.DAGEval, now time.Time) []domain.Check {
+	srcFresh, srcPipe := domain.SrcAstroFreshness, domain.SrcAstroPipeline
+	nameFresh, namePipe := "Astro freshness ", "Astro pipeline "
+	if strings.EqualFold(dag.PipelineType, domain.PipelineTypeFivetran) {
+		srcFresh, srcPipe = domain.SrcFivetranFreshness, domain.SrcFivetranPipeline
+		nameFresh, namePipe = "Fivetran freshness ", "Fivetran sync "
+	}
 	var out []domain.Check
 	if ev.FreshnessBand == domain.FreshnessRed || ev.FreshnessBand == domain.FreshnessYellow {
 		st := domain.CheckFailed
@@ -98,11 +124,11 @@ func virtualChecks(dp domain.DataProduct, dag domain.DAG, ev pipeline.DAGEval, n
 			ID:              fmt.Sprintf("%s:%s:%s:freshness", dp.ID, dag.DeploymentName, dag.DAGID),
 			DataProductID:   dp.ID,
 			DataProductName: dp.Name,
-			Name:            "Astro freshness " + dag.DAGID,
+			Name:            nameFresh + dag.DAGID,
 			Dimension:       domain.DimFreshness,
 			Severity:        sev,
 			Status:          st,
-			SourceType:      domain.SrcAstroFreshness,
+			SourceType:      srcFresh,
 			SourceTable:     dag.DAGID,
 			ExecutedAt:      now,
 			FirstFailedAt:   &failAt,
@@ -117,11 +143,11 @@ func virtualChecks(dp domain.DataProduct, dag domain.DAG, ev pipeline.DAGEval, n
 			ID:              fmt.Sprintf("%s:%s:%s:pipeline", dp.ID, dag.DeploymentName, dag.DAGID),
 			DataProductID:   dp.ID,
 			DataProductName: dp.Name,
-			Name:            "Astro pipeline " + dag.DAGID,
+			Name:            namePipe + dag.DAGID,
 			Dimension:       domain.DimFreshness,
 			Severity:        domain.SevCritical,
 			Status:          domain.CheckFailed,
-			SourceType:      domain.SrcAstroPipeline,
+			SourceType:      srcPipe,
 			SourceTable:     dag.DAGID,
 			ExecutedAt:      now,
 			FirstFailedAt:   &failAt,

@@ -144,10 +144,15 @@ func nodeFrom(v any) (domain.LineageNode, bool) {
 			return domain.LineageNode{}, false
 		}
 		return domain.LineageNode{
-			Name:        name,
-			Type:        str(t, "type", "TYPE"),
-			Status:      str(t, "status", "STATUS"),
-			HealthScore: floatPtr(first(t, "health_score", "HEALTH_SCORE")),
+			Name:             name,
+			Type:             str(t, "type", "TYPE"),
+			Status:           str(t, "status", "STATUS"),
+			HealthScore:      floatPtr(first(t, "health_score", "HEALTH_SCORE")),
+			Schema:           str(t, "schema", "SCHEMA"),
+			ConnectorService: str(t, "connector_service", "CONNECTOR_SERVICE"),
+			ConnectorType:    str(t, "connector_type", "CONNECTOR_TYPE"),
+			ConnectionCount:  intVal(first(t, "connection_count", "CONNECTION_COUNT")),
+			PausedCount:      intVal(first(t, "paused_count", "PAUSED_COUNT")),
 		}, true
 	default:
 		b, err := json.Marshal(t)
@@ -254,6 +259,34 @@ func floatPtr(v any) *float64 {
 		return nil
 	}
 	return &f
+}
+
+func intVal(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case json.Number:
+		n, err := t.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(n)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(t))
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
+	}
 }
 
 func asTime(v any) time.Time {

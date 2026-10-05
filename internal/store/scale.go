@@ -22,7 +22,7 @@ func estimateScale(in scaleInput) domain.ScaleEstimate {
 		CheckCount:          in.checks,
 		HealthHistoryPoints: in.histPoints,
 		SnapshotJSONBytes:   in.snapshotJSON,
-		AirflowPoll:         "O(deployments × listed DAGs) to enumerate (4 deployments at a time), then O(matched DAGs) latest-run history (8 workers, up to 400 runs/DAG). Extra products on the same deployments do not re-list Airflow. A 40-product / 14-deployment live fleet took ~16–29s. Raise the 90s interval only if a poll overruns.",
+		AirflowPoll:         "O(deployments × listed DAGs) to enumerate (4 deployments at a time), then O(matched DAGs) latest-run history (8 workers, up to 400 runs/DAG). Extra products on the same deployments do not re-list Airflow. Raise the 90s interval only if a poll overruns. Fivetran is O(groups × connections) on the same interval for source-aligned products.",
 		QualityPoll:         "O(data products) warehouse queries, 8 at a time after SSO, plus lineage-mart and pipeline-mart queries. Latest validation/Elementary run only — dbt tests follow the pipeline, not this poll. Missing tables are cached. Default interval 5m so the poll stays behind the warehouse watermark.",
 		ClockTick:           "O(data products × DAGs) in process, no I/O. 15s ticks stay cheap at 200 products.",
 	}

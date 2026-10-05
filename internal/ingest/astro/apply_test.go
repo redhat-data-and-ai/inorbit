@@ -20,7 +20,8 @@ func TestApplyKeepsNewestRunAcrossDeployments(t *testing.T) {
 	}
 	st := store.New()
 	st.UpsertProduct(domain.DataProduct{ID: "catalog", Name: "catalog"})
-	astro.Apply(st, engine.New(st), dags, newer)
+	astro.Apply(st, dags)
+	engine.New(st).Recompute(newer)
 	snap, ok := st.Snapshot("catalog")
 	if !ok || len(snap.Pipeline) != 2 {
 		t.Fatalf("got %+v ok=%v", snap.Pipeline, ok)
@@ -51,6 +52,34 @@ func TestMergeLiveAndMartPrefersLive(t *testing.T) {
 	}
 	if got[1].DAGID != "gamma_daily" || got[1].AstroURL == "" {
 		t.Fatalf("mart fill %+v", got[1])
+	}
+}
+
+func TestMergeKeepsFivetranBesideSameNamedDAG(t *testing.T) {
+	live := []domain.DAG{
+		{DataProductID: "beta", DAGID: "beta", Status: "SUCCESS", PipelineType: domain.PipelineTypeDAG, DeploymentName: "prod"},
+		{DataProductID: "beta", DAGID: "beta", Status: "FAILED", PipelineType: domain.PipelineTypeFivetran, DeploymentName: "prod"},
+		{DataProductID: "beta", DAGID: "beta", Status: "SUCCESS", PipelineType: domain.PipelineTypeFivetran, DeploymentName: "stage"},
+	}
+	got := astro.MergeLiveAndMart(live, nil)
+	if len(got) != 3 {
+		t.Fatalf("len %d %+v", len(got), got)
+	}
+}
+
+func TestApplyDropsFivetranFromPipelineRows(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	dags := []domain.DAG{
+		{DataProductID: "beta", DAGID: "beta", DeploymentName: "prod", Status: "SUCCESS", PipelineType: domain.PipelineTypeFivetran, CompletedAt: &now},
+		{DataProductID: "beta", DAGID: "beta", DeploymentName: "stage", Status: "FAILED", PipelineType: domain.PipelineTypeFivetran, CompletedAt: &now},
+	}
+	st := store.New()
+	st.UpsertProduct(domain.DataProduct{ID: "beta", Name: "beta", Type: "source-aligned"})
+	astro.Apply(st, dags)
+	engine.New(st).Recompute(now)
+	snap, ok := st.Snapshot("beta")
+	if !ok || len(snap.Pipeline) != 0 {
+		t.Fatalf("fivetran rows belong on lineage chips, got pipeline %+v ok=%v", snap.Pipeline, ok)
 	}
 }
 
