@@ -151,18 +151,34 @@ function pretty(status) {
   return raw.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function pipelineSummary(rows) {
+function pipelineCountLabel(list) {
+  const n = (list || []).length;
+  return n === 1 ? "1 DAG" : n + " DAGs";
+}
+
+function connectorCountLabel(list) {
+  const n = (list || []).length;
+  if (!n) return "";
+  return n === 1 ? "1 connector" : n + " connectors";
+}
+
+function pipelineSummary(rows, connectors) {
   const list = rows || [];
-  if (!list.length) return { label: "No DAGs", cls: "muted", detail: "0 DAGs" };
+  const extra = connectorCountLabel(connectors);
+  if (!list.length) {
+    if (extra) return { label: "Connectors", cls: "ok", detail: extra };
+    return { label: "No pipelines", cls: "muted", detail: "0 DAGs" };
+  }
   const failed = list.filter((d) => String(d.dag_status).toUpperCase() === "FAILED" || d.dag_overall_status === "FAILED").length;
   const running = list.filter((d) => String(d.dag_status).toUpperCase() === "RUNNING").length;
   const paused = list.filter((d) => d.dag_is_paused).length;
-  const n = list.length + (list.length === 1 ? " DAG" : " DAGs");
-  if (failed) return { label: "Failed", cls: "bad", detail: failed + " failed · " + n };
-  if (running) return { label: "Running", cls: "warn", detail: running + " running · " + n };
-  if (paused === list.length) return { label: "Paused", cls: "bad", detail: n };
+  const n = pipelineCountLabel(list);
+  const detail = extra ? n + " · " + extra : n;
+  if (failed) return { label: "Failed", cls: "bad", detail: failed + " failed · " + detail };
+  if (running) return { label: "Running", cls: "warn", detail: running + " running · " + detail };
+  if (paused === list.length) return { label: "Paused", cls: "bad", detail };
   const worst = list.find((d) => d.dag_overall_status === "AT_RISK") ? "At risk" : "Trusted";
-  return { label: worst, cls: worst === "Trusted" ? "ok" : "bad", detail: n };
+  return { label: worst, cls: worst === "Trusted" ? "ok" : "bad", detail };
 }
 
 function qualitySummary(rows, sources) {
@@ -202,10 +218,19 @@ function labelAs(status, text) {
   return `<span class="pf-v5-c-label pf-m-outline ${labelMod(cls)} label ${cls}"><span class="pf-v5-c-label__content"><span class="pf-v5-c-label__text">${esc(text)}</span></span></span>`;
 }
 
+function isFivetran(d) {
+  return String((d && d.pipeline_type) || "").toUpperCase() === "FIVETRAN";
+}
+
+function openLabel(d) {
+  return isFivetran(d) ? "Open in Fivetran" : "Open in Astro";
+}
+
 function astroLink(d, compact) {
   const href = d.astro_url;
   if (!href) return compact ? "" : "—";
-  const a = `<a class="astro-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(d.dag_id)} in Astro">Open in Astro</a>`;
+  const label = openLabel(d);
+  const a = `<a class="astro-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(d.dag_id)} in ${isFivetran(d) ? "Fivetran" : "Astro"}">${esc(label)}</a>`;
   if (compact) return a;
   return `${a}<div class="url-path">${esc(href)}</div>`;
 }
@@ -213,7 +238,7 @@ function astroLink(d, compact) {
 function dagNameCell(d) {
   const name = esc(d.dag_id);
   if (!d.astro_url) return name;
-  return `<a class="dag-link" href="${esc(d.astro_url)}" target="_blank" rel="noopener noreferrer" title="Open ${name} in Astro">${name}</a>`;
+  return `<a class="dag-link" href="${esc(d.astro_url)}" target="_blank" rel="noopener noreferrer" title="${esc(openLabel(d))}">${name}</a>`;
 }
 
 function fmtSpan(v, empty) {
@@ -309,7 +334,7 @@ function pipelineRows(d) {
     </td>
     <td class="pipe-name">
       <div class="pipe-id">${esc(d.dag_id)}</div>
-      <div class="pipe-meta">${esc(d.astro_deployment_name || "Astro")} · ${esc(d.pipeline_type || "DAG")}${badges ? " " + badges : ""}</div>
+      <div class="pipe-meta">${esc(d.astro_deployment_name || (isFivetran(d) ? "Fivetran" : "Astro"))} · ${esc(d.pipeline_type || "DAG")}${badges ? " " + badges : ""}</div>
     </td>
     <td class="pipe-status">
       ${statusLabel}
@@ -324,7 +349,7 @@ function pipelineRows(d) {
   if (!open) return main;
   return main + `<tr class="pipe-detail"><td colspan="8">
     <div class="detail-grid">
-      <div><span>Astro</span>${astroLink(d)}</div>
+      <div><span>${isFivetran(d) ? "Fivetran" : "Astro"}</span>${astroLink(d)}</div>
       <div><span>Run id</span>${esc(d.external_run_id || "—")}</div>
       <div><span>Last success</span>${fmtWhen(d.last_successful_at)}</div>
       <div><span>Started</span>${fmtWhen(d.dag_started_at)}</div>
@@ -371,7 +396,7 @@ function donut(pct, title, sub, cls, inner) {
         <circle class="arc" cx="50" cy="50" r="${r}" stroke-dasharray="${dash} ${circ.toFixed(2)}" transform="rotate(-90 50 50)"></circle>
       </svg>
       <div class="donut-center">${inner || `<strong>${esc(title)}</strong>`}</div>
-    </div>
+      </div>
     <div class="donut-caption">${esc(sub)}</div>
   </div>`;
 }
@@ -414,7 +439,7 @@ function segmentDonut(segments, center, caption) {
         ${arcs}
       </svg>
       <div class="donut-center"><strong>${esc(center)}</strong></div>
-    </div>
+      </div>
     <div class="donut-caption">${esc(caption)}</div>
     <ul class="seg-legend">${legend}</ul>
   </div>`;
@@ -444,7 +469,7 @@ function dimBars(h) {
         <span class="dim-val">${esc(fmtScore(score))}</span>
       </div>`;
     }).join("")}</div>
-    </div>
+      </div>
   </div>`;
 }
 
@@ -533,7 +558,7 @@ function healthChart(points) {
     <div class="io-trend-range">
       <span class="bad">Lowest ${esc(fmtScore(lo))}%</span>
       <span class="ok">Highest ${esc(fmtScore(hi))}%</span>
-    </div>
+      </div>
   </div>`;
 }
 
@@ -614,9 +639,9 @@ function typeKind(t) {
 function envRank(name) {
   const v = String(name || "").toLowerCase();
   if (!v) return 0;
-  if (/pre[-_ ]?prod|staging|\buat\b/.test(v)) return 2;
-  if (/\bprod(uction)?\b/.test(v) && !/non[-_ ]?prod/.test(v)) return 3;
-  if (/sandbox|\bsbx\b|\bdev\b|\bqa\b/.test(v)) return 1;
+  if (/pre[-_ ]?prod|staging|(^|[^a-z0-9])stage([^a-z0-9]|$)|(^|[^a-z0-9])uat([^a-z0-9]|$)/.test(v)) return 2;
+  if (v.includes("prod") && !/non[-_ ]?prod/.test(v)) return 3;
+  if (/sandbox|(^|[^a-z0-9])sbx([^a-z0-9]|$)|(^|[^a-z0-9])dev([^a-z0-9]|$)|(^|[^a-z0-9])qa([^a-z0-9]|$)/.test(v)) return 1;
   return 0;
 }
 
@@ -626,6 +651,10 @@ function dagEnv(d) {
   if (r === 2) return "preprod";
   if (r === 1) return "sandbox";
   return "unknown";
+}
+
+function connEnv(c) {
+  return dagEnv({ astro_deployment_name: c && c.group_name });
 }
 
 function envLabel(kind) {
@@ -641,20 +670,29 @@ function pipelineForEnv(list, env) {
   return rows.filter((d) => dagEnv(d) === env);
 }
 
+function connectorsForEnv(list, env) {
+  const rows = list || [];
+  if (!env || env === "all") return rows;
+  return rows.filter((c) => connEnv(c) === env);
+}
+
 function snapEnvs(s) {
   const seen = {};
   (s.pipeline || []).forEach((d) => { seen[dagEnv(d)] = true; });
+  (s.connectors || []).forEach((c) => { seen[connEnv(c)] = true; });
   return ["production", "preprod", "sandbox", "unknown"].filter((k) => seen[k]).map(envLabel);
 }
 
 function hasEnv(s, env) {
   if (!env || env === "all") return true;
-  return (s.pipeline || []).some((d) => dagEnv(d) === env);
+  return (s.pipeline || []).some((d) => dagEnv(d) === env) || (s.connectors || []).some((c) => connEnv(c) === env);
 }
 
 function envKind(s, env) {
   if (env && env !== "all") return envLabel(env);
-  const names = (s.pipeline || []).map((d) => String(d.astro_deployment_name || "").trim()).filter(Boolean);
+  const names = (s.pipeline || []).map((d) => String(d.astro_deployment_name || "").trim())
+    .concat((s.connectors || []).map((c) => String(c.group_name || "").trim()))
+    .filter(Boolean);
   if (!names.length) return envLabel("unknown");
   let best = names[0];
   let bestR = -1;
@@ -679,7 +717,10 @@ function preferredProductEnv(snap) {
 }
 
 function scopedSnap(s, env) {
-  return Object.assign({}, s, { pipeline: pipelineForEnv(s.pipeline, env) });
+  return Object.assign({}, s, {
+    pipeline: pipelineForEnv(s.pipeline, env),
+    connectors: connectorsForEnv(s.connectors, env),
+  });
 }
 
 function productEnvSelect(snap) {
@@ -687,7 +728,7 @@ function productEnvSelect(snap) {
   if (!envs.length) return "";
   const cur = preferredProductEnv(snap);
   return catalogSelect("product-env", "Environment", envs.map((e) => {
-    const n = pipelineForEnv(snap.pipeline, e.kind).length;
+    const n = pipelineForEnv(snap.pipeline, e.kind).length + connectorsForEnv(snap.connectors, e.kind).length;
     return [e.kind, e.text, n];
   }), cur);
 }
@@ -717,7 +758,7 @@ function catalogBlurb(s) {
   if (msg && msg.length < 180 && !/^score capped/i.test(msg)) return msg;
   const kind = typeKind(p.dp_type).text;
   const owner = p.owner_team ? " · " + p.owner_team : "";
-  const pipe = pipelineSummary(s.pipeline);
+  const pipe = pipelineSummary(s.pipeline, s.connectors);
   const qual = qualitySummary(s.quality, s.quality_sources);
   return kind + " data product" + owner + ". Pipeline " + pipe.label.toLowerCase() + ", quality " + qual.label.toLowerCase() + ".";
 }
@@ -776,8 +817,8 @@ function filteredCatalog() {
     if (state.typeFilter === "source-aligned" && t !== "source-aligned" && t !== "source") return false;
     if (state.envFilter !== "all" && !hasEnv(s, state.envFilter)) return false;
     if (state.highImpact && bucket !== "at_risk") return false;
-    if (!q) return true;
-    const p = s.data_product || {};
+      if (!q) return true;
+      const p = s.data_product || {};
     return [p.data_product_name, p.data_product_id, p.owner_team, p.dp_type, envKind(s).text].some((v) => String(v || "").toLowerCase().includes(q));
   });
   return [...snaps].sort((a, b) => {
@@ -803,7 +844,7 @@ function downloadCatalogCSV() {
       envKind(s, state.envFilter).text,
       pretty(h.status),
       h.total_checks ? Math.round(Number(h.health_score) || 0) : "",
-      pipelineSummary(pipelineForEnv(s.pipeline, state.envFilter)).label,
+      pipelineSummary(pipelineForEnv(s.pipeline, state.envFilter), connectorsForEnv(s.connectors, state.envFilter)).label,
       qualitySummary(s.quality, s.quality_sources).label,
       p.owner_team || "",
     ].map(csvCell).join(","));
@@ -918,7 +959,7 @@ function tile(k, v, s, href) {
 }
 
 function tilesHTML(snap, hrefBase) {
-  const pipe = pipelineSummary(snap.pipeline);
+  const pipe = pipelineSummary(snap.pipeline, snap.connectors);
   const qual = qualitySummary(snap.quality, snap.quality_sources);
   const lin = lineageSummary(snap.lineage);
   return `
@@ -948,7 +989,7 @@ function primaryDAG(list) {
 }
 
 function runHeadline(d) {
-  if (!d) return { title: "No DAG", cls: "muted" };
+  if (!d) return { title: "No pipeline", cls: "muted" };
   if (d.dag_is_paused) return { title: "Paused", cls: "bad" };
   const st = String(d.dag_status || "").toUpperCase();
   if (st === "SUCCESS") return { title: "Succeeded", cls: "ok" };
@@ -966,7 +1007,7 @@ function freshnessHeadline(d, f) {
 }
 
 function slaBadge(d) {
-  if (!d) return { text: "No DAG", cls: "muted" };
+  if (!d) return { text: "No pipeline", cls: "muted" };
   if (d.dag_is_custom) return { text: "Not scored", cls: "muted" };
   const sla = String(d.dag_pipeline_sla_status || "").toUpperCase();
   if (sla === "TRUSTED" || sla === "OK" || sla === "GREEN") return { text: "On schedule", cls: "ok" };
@@ -1040,10 +1081,10 @@ function primaryFreshnessHTML(snap, hrefBase) {
     `<button type="button" class="io-rel-btn${(state.relWindow || "7d") === key ? " active" : ""}" data-rel-window="${key}">${label}</button>`
   ).join("");
   const astro = d.astro_url
-    ? `<a class="io-pfresh-link astro-open" href="${esc(d.astro_url)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(d.dag_id)} in Astro">Open in Astro</a>`
+    ? `<a class="io-pfresh-link astro-open" href="${esc(d.astro_url)}" target="_blank" rel="noopener noreferrer" title="${esc(openLabel(d))}">${esc(openLabel(d))}</a>`
     : "";
   const upHref = hrefBase ? hrefBase + "?tab=lineage" : "";
-  const infoTitle = "Primary DAG " + d.dag_id + ". Data as of is last successful run; last updated is when InOrbit scored the DAG.";
+  const infoTitle = (isFivetran(d) ? "Primary connector " : "Primary DAG ") + d.dag_id + ". Data as of is last successful run; last updated is when InOrbit scored the pipeline.";
   return `
     <div class="io-pfresh-wrap">
       <div class="io-pfresh-head">
@@ -1079,6 +1120,27 @@ function primaryFreshnessHTML(snap, hrefBase) {
     </div>`;
 }
 
+function connectorStripHTML(snap, hrefBase) {
+  const conns = snap.connectors || [];
+  if (!conns.length) return "";
+  const paused = conns.filter((c) => c.paused).length;
+  const types = [];
+  const seen = {};
+  conns.forEach((c) => {
+    const name = c.service_name || pretty(c.service);
+    if (name && !seen[name]) {
+      seen[name] = true;
+      types.push(name);
+    }
+  });
+  const typeBit = types.length ? " (" + types.slice(0, 4).join(", ") + (types.length > 4 ? ", …" : "") + ")" : "";
+  const pauseBit = paused ? " · " + paused + " paused" : "";
+  const text = "This product has " + connectorCountLabel(conns) + typeBit + pauseBit + ". Connector type and pause state are on Lineage source nodes.";
+  const href = hrefBase ? hrefBase + "?tab=lineage" : "";
+  const body = href ? `<a href="${esc(href)}">${esc(text)} View lineage</a>` : esc(text);
+  return `<div class="io-conn-strip">${body}</div>`;
+}
+
 function fetchBanner(extra) {
   const m = state.meta || {};
   const warnings = m.warnings || [];
@@ -1091,6 +1153,7 @@ function fetchBanner(extra) {
   const bits = [
     extra,
     "Airflow " + (parseDate(m.last_astro_run_poll) ? fmtRelative(m.last_astro_run_poll) : "—"),
+    "Fivetran " + (parseDate(m.last_fivetran_poll) ? fmtRelative(m.last_fivetran_poll) : "—"),
     "Quality " + (parseDate(m.last_quality_poll) ? fmtRelative(m.last_quality_poll) : "—"),
     "Lineage " + (parseDate(m.last_lineage_poll) ? fmtRelative(m.last_lineage_poll) : "—"),
   ].filter((x) => x && !String(x).endsWith("—"));
@@ -1115,6 +1178,7 @@ function renderList() {
     else typeCounts.other += 1;
     const kinds = {};
     (s.pipeline || []).forEach((d) => { kinds[dagEnv(d)] = true; });
+    (s.connectors || []).forEach((c) => { kinds[connEnv(c)] = true; });
     Object.keys(kinds).forEach((k) => {
       if (envCounts[k] != null) envCounts[k] += 1;
     });
@@ -1134,13 +1198,13 @@ function renderList() {
       <div class="io-card-head">
         <h2 class="io-card-name">${esc(p.data_product_name || id)}</h2>
         ${healthChip(h)}
-      </div>
+          </div>
       ${catalogBlurbHTML(view)}
       <div class="io-card-pills">
         <span class="io-pill io-pill-${tp.kind}">${esc(tp.text)}</span>
         <span class="io-pill io-pill-env-${env.kind}">${esc(env.text)}</span>
-      </div>
-    </a>`;
+        </div>
+      </a>`;
   }).join("");
   const rows = snaps.map((s) => {
     const p = s.data_product || {};
@@ -1148,7 +1212,7 @@ function renderList() {
     const view = scopedSnap(s, catalogEnv);
     const h = s.health || {};
     const primary = primaryDAG(view.pipeline);
-    const pipe = pipelineSummary(view.pipeline);
+    const pipe = pipelineSummary(view.pipeline, view.connectors);
     const qual = qualitySummary(s.quality, s.quality_sources);
     const href = `#/data-product/${encodeURIComponent(id)}`;
     const age = primary && primary.dag_data_age_mins != null ? fmtSpan(primary.dag_data_age_mins) : "—";
@@ -1184,7 +1248,7 @@ function renderList() {
         <div>
           <h1 class="pf-v5-c-title pf-m-2xl io-page-title">Data Products <span class="io-count">${all.length}</span></h1>
           <p class="io-lede">List of data products currently active.</p>
-        </div>
+    </div>
       </div>
       <div class="io-toolbar">
         <label class="io-search-wrap">
@@ -1242,13 +1306,50 @@ function dagGetters() {
 function nodeKind(n) {
   const t = String((n && n.type) || "").toLowerCase();
   if (t === "data_product" || t === "") return "data_product";
-  if (t.includes("fivetran") || t.includes("snowpipe") || t.includes("external")) return "source";
+  if (t.includes("fivetran") || t.includes("snowpipe") || t.includes("external") || n.connector_service) return "source";
   if (t === "service_account") return "service_account";
   if (t === "consumer_group") return "consumer_group";
   return t || "other";
 }
 
+function connectorMark(service) {
+  const s = String(service || "").toLowerCase();
+  let inner = `<circle cx="12" cy="12" r="8"/><path d="M8 12h8"/>`;
+  if (s.includes("sheet")) {
+    inner = `<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 4v16"/>`;
+  } else if (s === "s3" || s.includes("amazon_s3") || s.includes("s3_")) {
+    inner = `<ellipse cx="12" cy="8" rx="8" ry="3.5"/><path d="M4 8v8c0 2 3.6 3.5 8 3.5s8-1.5 8-3.5V8"/>`;
+  } else if (s.includes("salesforce")) {
+    inner = `<ellipse cx="12" cy="12" rx="9" ry="6"/>`;
+  } else if (s.includes("postgres") || s.includes("aurora") || s.includes("mysql") || s.includes("sql") || s.includes("snowflake") || s.includes("mongo") || s.includes("oracle")) {
+    inner = `<ellipse cx="12" cy="7" rx="7" ry="3"/><path d="M5 7v10c0 1.7 3.1 3 7 3s7-1.3 7-3V7"/>`;
+  }
+  return `<svg class="lineage-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">${inner}</svg>`;
+}
+
+function genericSourceMark() {
+  return `<svg class="lineage-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="7" rx="7" ry="3"/><path d="M5 7v10c0 1.7 3.1 3 7 3s7-1.3 7-3V7"/></svg>`;
+}
+
+function lineageSourceCard(n) {
+  const name = n.name || n.schema || "—";
+  const typed = n.connector_service || n.connector_type;
+  const typeLabel = typed ? (n.connector_type || pretty(n.connector_service)) : pretty(n.type || "source");
+  const typeRow = `<div class="io-src-type${typed ? "" : " io-src-type-generic"}">${typed ? connectorMark(n.connector_service) : genericSourceMark()}<span>${esc(typeLabel)}</span></div>`;
+  const nConn = Number(n.connection_count) || 0;
+  const nPaused = Number(n.paused_count) || 0;
+  const chips = [];
+  if (typed && nConn) chips.push(`<span class="io-src-chip">${esc(nConn === 1 ? "1 connection" : nConn + " connections")}</span>`);
+  if (nPaused > 0) chips.push(`<span class="io-src-chip io-src-chip-paused">${esc(nPaused === 1 ? "1 paused" : nPaused + " paused")}</span>`);
+  return `<div class="io-src-card">
+    <div class="io-src-title">${esc(name)}</div>
+    ${typeRow}
+    ${chips.length ? `<div class="io-src-meta">${chips.join("")}</div>` : ""}
+  </div>`;
+}
+
 function lineageNodeHTML(n, known) {
+  if (nodeKind(n) === "source") return lineageSourceCard(n);
   const kind = nodeKind(n);
   const score = n.health_score != null ? fmtScore(n.health_score) : "—";
   const name = n.name || "—";
@@ -1264,11 +1365,11 @@ function lineageTable(title, nodes, kind) {
   const q = state.tableFilter.trim().toLowerCase();
   let rows = (nodes || []).filter((n) => {
     if (kind !== "all" && nodeKind(n) !== kind) return false;
-    return rowMatch(q, [n.name, n.type, n.status]);
+    return rowMatch(q, [n.name, n.type, n.status, n.connector_type, n.connector_service, n.schema]);
   });
   rows = applyTableSort(rows, {
     name: (n) => n.name,
-    type: (n) => n.type,
+    type: (n) => n.connector_type || n.type,
     status: (n) => n.status,
     score: (n) => n.health_score,
   });
@@ -1292,7 +1393,7 @@ function lineageTable(title, nodes, kind) {
                 : esc(n.name || "—");
               return `<tr>
                 <td>${nameCell}</td>
-                <td>${esc(pretty(n.type || "data product"))}</td>
+                <td>${esc(n.connector_type || pretty(n.type || "data product"))}</td>
                 <td>${label(n.status || "UNKNOWN")}</td>
                 <td>${n.health_score != null ? esc(fmtScore(n.health_score)) : "—"}</td>
               </tr>`;
@@ -1322,25 +1423,33 @@ function renderLineage(snap, base) {
     if (p.data_product_id) known[p.data_product_id] = true;
     if (p.data_product_name) known[p.data_product_name] = true;
   });
+  const sources = up.filter((n) => nodeKind(n) === "source");
+  const typed = sources.filter((n) => n.connector_service || n.connector_type);
+  const genericSrc = sources.filter((n) => !(n.connector_service || n.connector_type));
+  const orderedSources = typed.concat(genericSrc);
+  const shownUp = orderedSources.slice(0, 3);
+  const moreUp = Math.max(0, orderedSources.length - shownUp.length);
   const impact = lin.blast_radius_score ? label(lin.blast_radius_score) : "";
   const computed = parseDate(lin.computed_at) ? fmtRelative(lin.computed_at) : "—";
+  const h = snap.health || {};
+  const left = sources.length
+    ? `<div class="io-lin-k">Upstream sources <span class="chip-count">${sources.length}</span></div>${shownUp.map(lineageSourceCard).join("")}${moreUp > 0 ? `<a class="lineage-more" href="#lineage-upstream">+${moreUp} more sources — View all</a>` : ""}`
+    : (up.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No upstream</p>`);
   return `
-    <div class="io-stat-row">
-      <div class="io-stat"><strong>${esc(String(lin.upstream_count || up.length))}</strong><span>Upstream</span></div>
-      <div class="io-stat"><strong>${esc(String(lin.direct_downstream_count || down.length))}</strong><span>Downstream</span></div>
-      <div class="io-stat"><strong>${esc(String(lin.blast_radius_count || 0))}</strong><span>Blast radius</span></div>
-    </div>
-    <div class="lineage-flow">
-      <div class="lineage-col up">${up.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No upstream</p>`}</div>
-      <div class="pf-v5-c-card pf-m-compact lineage-center">
-        <div class="pf-v5-c-card__body">
-        <div class="k io-metric-k">This product</div>
-        <div class="v io-metric-v">${esc((snap.data_product || {}).data_product_name || "")}</div>
-        <div class="s">${label((snap.health || {}).status)}${impact ? " " + impact : ""}</div>
+    <section class="io-lin-overview">
+      <h2 class="io-lin-overview-title">Data Lineage Overview</h2>
+      <div class="lineage-flow">
+        <div class="lineage-col up">${left}</div>
+        <div class="pf-v5-c-card pf-m-compact lineage-center">
+          <div class="pf-v5-c-card__body">
+          <div class="k io-metric-k">This product</div>
+          <div class="v io-metric-v">${esc((snap.data_product || {}).data_product_name || "")}</div>
+          <div class="s">${healthChip(h)}${impact ? " " + impact : ""}</div>
+          </div>
         </div>
+        <div class="lineage-col down">${down.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No downstream</p>`}</div>
       </div>
-      <div class="lineage-col down">${down.slice(0, 8).map((n) => lineageNodeHTML(n, known)).join("") || `<p class="muted-cell">No downstream</p>`}</div>
-    </div>
+    </section>
     ${tableToolbar(allNodes.length, allNodes.length, "Filter lineage by name or type",
       chipGroup([
         ["all", "All", counts.all],
@@ -1350,7 +1459,7 @@ function renderLineage(snap, base) {
         ["consumer_group", "Consumer groups", counts.consumer_group],
       ], kind, "lkind")
     )}
-    <div class="lineage-grid">
+    <div class="lineage-grid" id="lineage-upstream">
       ${lineageTable("Upstream sources", up, kind)}
       ${lineageTable("Downstream consumers", down, kind)}
     </div>
@@ -1396,14 +1505,14 @@ function renderDetail(route) {
     const caution = all.filter((d) => dagFreshBucket(d) === "caution").length;
     const trusted = all.filter((d) => dagFreshBucket(d) === "trusted").length;
     const ok = success;
-    const dagEmptyHint = "Live Airflow only lists deployments in config. The warehouse pipeline mart fills DAGs for catalog products that are not on those deployments.";
+    const dagEmptyHint = "Live Airflow lists configured deployments. The warehouse pipeline mart covers catalog products those polls miss. Source-aligned Fivetran connectors are summarized above and shown on Lineage.";
     let rows = all.filter((d) => {
       if (state.runFilter !== "all" && dagRunBucket(d) !== state.runFilter) return false;
       if (state.freshnessFilter !== "all" && dagFreshBucket(d) !== state.freshnessFilter) return false;
       return rowMatch(q, [d.dag_id, d.astro_deployment_name, d.dag_status, d.dag_overall_status, d.dag_freshness_status, d.astro_url, d.external_run_id, d.trigger_type, d.dag_frequency_display, d.dag_overall_status_description, d.is_primary_dag ? "primary" : "", d.dag_is_paused ? "paused" : "", d.dag_is_custom ? "custom" : ""]);
     });
     rows = applyTableSort(rows, dagGetters());
-    const dagFilterBar = tableToolbar(rows.length, all.length, "Filter DAGs by id or deployment",
+    const dagFilterBar = tableToolbar(rows.length, all.length, "Filter pipelines by id or destination",
       chipGroup([
         ["all", "All", all.length],
         ["failed", "Failed", failed],
@@ -1420,13 +1529,14 @@ function renderDetail(route) {
     );
     const cols = 8;
     const noDags = all.length === 0
-      ? emptyRow(cols, "No active DAGs matched this product.", dagEmptyHint)
-      : emptyRow(cols, "No DAGs match these filters.", "Clear the run or SLA chips, or the search box.");
+      ? emptyRow(cols, "No active pipelines matched this product.", dagEmptyHint)
+      : emptyRow(cols, "No pipelines match these filters.", "Clear the run or SLA chips, or the search box.");
     const customCount = all.filter((d) => d.dag_is_custom).length;
     body = `
       ${primaryFreshnessHTML(view, base)}
+      ${connectorStripHTML(view, base)}
       <div class="io-stat-row">
-        <div class="io-stat"><strong>${all.length}</strong><span>DAGs</span></div>
+        <div class="io-stat"><strong>${all.length}</strong><span>Pipelines</span></div>
         <div class="io-stat"><strong>${failed}</strong><span>Failed</span></div>
         <div class="io-stat"><strong>${running}</strong><span>Running</span></div>
         <div class="io-stat"><strong>${atRisk}</strong><span>SLA risk</span></div>
@@ -1442,14 +1552,14 @@ function renderDetail(route) {
             <th>${sortBtn("last", "Last Run")}</th>
             <th>${sortBtn("next", "Next Run")}</th>
             <th>${sortBtn("rel7", "Reliability")}</th>
-            <th>Astro</th>
+            <th>Open</th>
           </tr></thead>
           <tbody>
             ${rows.map((d) => pipelineRows(d)).join("") || noDags}
           </tbody>
         </table>
       </div>
-      <p class="sub">${all.length} active DAG${all.length === 1 ? "" : "s"}${customCount ? " · " + customCount + " custom (shown, excluded from scores)" : ""} · Status, SLA, last/next run on the table. Expand a row for interval, age, and Astro URL. <strong>Open in Astro</strong> is on each row.</p>`;
+      <p class="sub">${esc(pipelineCountLabel(all))} active${connectorCountLabel(view.connectors) ? " · " + esc(connectorCountLabel(view.connectors)) : ""}${customCount ? " · " + customCount + " custom (shown, excluded from scores)" : ""} · Status, SLA, last/next run on the table. Expand a row for interval, age, and URL. <strong>Open in Astro</strong> is on each DAG row.</p>`;
   } else if (tab === "quality") {
     const q = state.tableFilter.trim().toLowerCase();
     const src = state.sourceFilter;
@@ -1548,7 +1658,7 @@ function renderDetail(route) {
       <div class="pf-v5-c-alert pf-m-inline ${cls === "bad" ? "pf-m-danger" : cls === "warn" ? "pf-m-warning" : "pf-m-info"} msg ${cls}">
         <h4 class="pf-v5-c-alert__title">${esc(h.status_message || f.status_reason || "No status message")}</h4>
       </div>
-      <p class="sub">Health Score v2 from live validation/Elementary and Astro pipeline checks. Open Pipeline for Status, SLA, and Astro links. Lineage is the warehouse mart graph.</p>`;
+      <p class="sub">Health Score v2 from live validation/Elementary and pipeline checks (Astro and Fivetran). Open Pipeline for Status, SLA, and DAG links. Source-aligned connectors appear as Lineage chips.</p>`;
   }
   return `
     <section class="pf-v5-c-page__main-section pf-m-light io-product-head">
@@ -1562,7 +1672,7 @@ function renderDetail(route) {
         <h1 class="pf-v5-c-title pf-m-2xl">${esc(p.data_product_name || p.data_product_id)}</h1>
         ${healthChip(snap.health || {})}
         ${productEnvSelect(snap)}
-      </div>
+    </div>
       <p class="io-lede">${esc(pretty(p.dp_type) || "")}${p.owner_team ? " · " + esc(p.owner_team) : ""}</p>
       ${fetchBanner("Updated " + updatedRel)}
       <div class="pf-v5-c-tabs pf-m-page-insets io-tabs tabs">
@@ -1686,7 +1796,7 @@ function bindApp() {
     else if (id === "product-env") state.productEnv = e.target.value;
     else if (id === "list-sort") state.listSort = e.target.value;
     else return;
-    render();
+      render();
   });
   app.addEventListener("input", (e) => {
     const id = e.target.id;
