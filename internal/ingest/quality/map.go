@@ -90,21 +90,31 @@ func dimensionFromTags(tags string) domain.Dimension {
 	return ""
 }
 
+// dimensionFromName classifies a test from its name when the table has no
+// dimension value. Earlier patterns win. A bare "check" is validity.
 func dimensionFromName(name string) domain.Dimension {
 	n := strings.ToLower(name)
 	switch {
 	case strings.Contains(n, "unique"):
 		return domain.DimUniqueness
-	case strings.Contains(n, "not_null"), strings.Contains(n, "not-null"), strings.Contains(n, "not null"):
+	case strings.Contains(n, "not") && strings.Contains(n, "null"):
 		return domain.DimCompleteness
-	case strings.Contains(n, "accepted_value"), strings.Contains(n, "accept"):
+	case strings.Contains(n, "accept"):
 		return domain.DimValidity
 	case strings.Contains(n, "relationship"):
 		return domain.DimConsistency
-	case strings.Contains(n, "recency"), strings.Contains(n, "sla"), strings.Contains(n, "fresh"):
+	case strings.Contains(n, "recency"):
 		return domain.DimFreshness
-	case strings.Contains(n, "reconcile"), strings.Contains(n, "split"), strings.Contains(n, "filter"):
+	case strings.Contains(n, "contract"), strings.Contains(n, "calculate"):
+		return domain.DimValidity
+	case strings.Contains(n, "lock") && strings.Contains(n, "due"):
+		return domain.DimConsistency
+	case strings.Contains(n, "filter"), strings.Contains(n, "split"), strings.Contains(n, "reconcile"):
 		return domain.DimAccuracy
+	case strings.Contains(n, "sla"), strings.Contains(n, "fresh"):
+		return domain.DimFreshness
+	case strings.Contains(n, "check"):
+		return domain.DimValidity
 	}
 	return ""
 }
@@ -210,13 +220,18 @@ func ValidationCheck(dp domain.DataProduct, rec map[string]any) (domain.Check, b
 	runID := stringify(recGet(rec, "RUN_ID"))
 	exec := asTime(recGet(rec, "RUN_TIME", "EXECUTED_AT"))
 	tags := stringify(recGet(rec, "TAGS", "TAGS_RAW"))
+	dim := MapDimension(stringify(recGet(rec, "DIMENSION")), tags, name)
+	if dim == domain.DimUnknown {
+		// Unclassified validation rows count as accuracy so the dimension is measured.
+		dim = domain.DimAccuracy
+	}
 	c := domain.Check{
 		ID:              fmt.Sprintf("%s:validation:%s:%s", dp.ID, runID, name),
 		DataProductID:   dp.ID,
 		DataProductName: dp.Name,
 		Name:            name,
 		Description:     stringify(recGet(rec, "DESCRIPTION", "CHECK_DESCRIPTION")),
-		Dimension:       MapDimension(stringify(recGet(rec, "DIMENSION")), tags, name),
+		Dimension:       dim,
 		Severity:        MapSeverity(stringify(recGet(rec, "SEVERITY")), "validation"),
 		Status:          status,
 		SourceType:      domain.SrcValidation,
@@ -249,7 +264,7 @@ func DBTCheck(dp domain.DataProduct, rec map[string]any) (domain.Check, bool) {
 	tags := stringify(recGet(rec, "TAGS", "TAGS_RAW"))
 	dim := MapDimension(stringify(recGet(rec, "DIMENSION", "QUALITY_DIMENSION")), tags, name)
 	if dim == domain.DimUnknown {
-		// Match int_dbt_test_results: unclassified dbt tests land on ACCURACY.
+		// Unclassified tests count as accuracy so the dimension is measured.
 		dim = domain.DimAccuracy
 	}
 	c := domain.Check{

@@ -31,6 +31,7 @@ type Snowflake struct {
 	sess    *sql.Conn
 	mu      sync.Mutex
 	missing map[string]bool
+	cols    map[string]map[string]bool
 }
 
 type ConnConfig struct {
@@ -288,35 +289,17 @@ func (s *Snowflake) productChecks(ctx context.Context, p domain.DataProduct) ([]
 			src.Validation = domain.QualitySource{Status: domain.QualityMissing}
 		} else if s.knownMissing(rel) {
 			src.Validation = domain.QualitySource{Status: domain.QualityMissing, Relation: rel}
+		} else if checks, qsrc, qerr := s.fetchLatest(ctx, rel, validationLatestSQL); qerr != nil {
+			src.Validation = qsrc
+			if qsrc.Status != domain.QualityMissing {
+				errs = append(errs, "validation: "+qerr.Error())
+			}
 		} else {
-			src.Validation = domain.QualitySource{Status: domain.QualityOK, Relation: rel}
-			vxSQL := `
-with staged as (
-  select * from ` + rel + `
-),
-latest as (
-  select run_id
-  from staged
-  qualify row_number() over (order by run_time desc nulls last) = 1
-)
-select s.*
-from staged s
-inner join latest l on s.run_id = l.run_id`
-			vx, err := s.latestRows(ctx, rel, vxSQL, func(rows []map[string]any) []map[string]any {
-				return KeepLatestRun(rows, []string{"RUN_TIME", "CREATED_AT", "UPDATED_AT", "EXECUTED_AT"}, []string{"RUN_ID"})
-			})
-			if err != nil {
-				if isMissingObject(err) {
-					src.Validation.Status = domain.QualityMissing
-				} else {
-					errs = append(errs, "validation: "+err.Error())
-				}
-			} else {
-				for _, rec := range vx {
-					stripSensitive(rec)
-					if c, ok := ValidationCheck(p, rec); ok {
-						out = append(out, c)
-					}
+			src.Validation = qsrc
+			for _, rec := range checks {
+				stripSensitive(rec)
+				if c, ok := ValidationCheck(p, rec); ok {
+					out = append(out, c)
 				}
 			}
 		}
@@ -329,35 +312,17 @@ inner join latest l on s.run_id = l.run_id`
 			src.DBT = domain.QualitySource{Status: domain.QualityMissing}
 		} else if s.knownMissing(rel) {
 			src.DBT = domain.QualitySource{Status: domain.QualityMissing, Relation: rel}
+		} else if checks, qsrc, qerr := s.fetchElementary(ctx, rel); qerr != nil {
+			src.DBT = qsrc
+			if qsrc.Status != domain.QualityMissing {
+				errs = append(errs, "dbt: "+qerr.Error())
+			}
 		} else {
-			src.DBT = domain.QualitySource{Status: domain.QualityOK, Relation: rel}
-			dbtSQL := `
-with staged as (
-  select * from ` + rel + `
-),
-latest as (
-  select coalesce(invocation_id, test_execution_id) as invocation_key
-  from staged
-  qualify row_number() over (order by detected_at desc nulls last) = 1
-)
-select s.*
-from staged s
-inner join latest l on coalesce(s.invocation_id, s.test_execution_id) = l.invocation_key`
-			dbt, err := s.latestRows(ctx, rel, dbtSQL, func(rows []map[string]any) []map[string]any {
-				return KeepLatestRun(rows, []string{"DETECTED_AT", "GENERATED_AT", "CREATED_AT"}, []string{"INVOCATION_ID", "TEST_EXECUTION_ID"})
-			})
-			if err != nil {
-				if isMissingObject(err) {
-					src.DBT.Status = domain.QualityMissing
-				} else {
-					errs = append(errs, "dbt: "+err.Error())
-				}
-			} else {
-				for _, rec := range dbt {
-					stripSensitive(rec)
-					if c, ok := DBTCheck(p, rec); ok {
-						out = append(out, c)
-					}
+			src.DBT = qsrc
+			for _, rec := range checks {
+				stripSensitive(rec)
+				if c, ok := DBTCheck(p, rec); ok {
+					out = append(out, c)
 				}
 			}
 		}
@@ -462,30 +427,107 @@ func (m missingObjectLogWriter) Write(p []byte) (int, error) {
 	return m.w.Write(p)
 }
 
-func (s *Snowflake) latestRows(ctx context.Context, rel, preferred string, keep func([]map[string]any) []map[string]any) ([]map[string]any, error) {
-	rows, err := s.query(ctx, preferred)
-	if err == nil {
-		return rows, nil
-	}
-	if isMissingObject(err) {
-		s.markMissing(rel)
-		return nil, err
-	}
-	if !isSchemaMismatch(err) {
-		return nil, err
-	}
-	raw, ferr := s.query(ctx, "select * from "+rel+" limit 4000")
-	if ferr != nil {
-		if isMissingObject(ferr) {
+func (s *Snowflake) fetchElementary(ctx context.Context, rel string) ([]map[string]any, domain.QualitySource, error) {
+	src := domain.QualitySource{Status: domain.QualityOK, Relation: rel}
+	have, err := s.relationColumns(ctx, rel)
+	if err != nil {
+		if isMissingObject(err) {
 			s.markMissing(rel)
-			return nil, ferr
+			src.Status = domain.QualityMissing
 		}
+		return nil, src, err
+	}
+	if len(have) == 0 {
+		s.markMissing(rel)
+		src.Status = domain.QualityMissing
+		return nil, src, fmt.Errorf("no columns for %s", rel)
+	}
+	testsRel := testsCatalogRelation(rel)
+	var testsHave map[string]bool
+	if testsRel != "" {
+		testsHave, _ = s.relationColumns(ctx, testsRel)
+	}
+	q, ok := elementaryLatestSQL(rel, have, testsRel, testsHave)
+	if !ok {
+		return nil, src, fmt.Errorf("%s has no status/run columns to score", rel)
+	}
+	rows, err := s.query(ctx, q)
+	if err != nil {
+		if isMissingObject(err) {
+			s.markMissing(rel)
+			src.Status = domain.QualityMissing
+		}
+		return nil, src, err
+	}
+	return rows, src, nil
+}
+
+func (s *Snowflake) fetchLatest(ctx context.Context, rel string, build func(string, map[string]bool) (string, bool)) ([]map[string]any, domain.QualitySource, error) {
+	src := domain.QualitySource{Status: domain.QualityOK, Relation: rel}
+	have, err := s.relationColumns(ctx, rel)
+	if err != nil {
+		if isMissingObject(err) {
+			s.markMissing(rel)
+			src.Status = domain.QualityMissing
+		}
+		return nil, src, err
+	}
+	if len(have) == 0 {
+		s.markMissing(rel)
+		src.Status = domain.QualityMissing
+		return nil, src, fmt.Errorf("no columns for %s", rel)
+	}
+	q, ok := build(rel, have)
+	if !ok {
+		return nil, src, fmt.Errorf("%s has no status/run columns to score", rel)
+	}
+	rows, err := s.query(ctx, q)
+	if err != nil {
+		if isMissingObject(err) {
+			s.markMissing(rel)
+			src.Status = domain.QualityMissing
+		}
+		return nil, src, err
+	}
+	return rows, src, nil
+}
+
+func (s *Snowflake) relationColumns(ctx context.Context, rel string) (map[string]bool, error) {
+	if s == nil {
+		return nil, fmt.Errorf("snowflake client is nil")
+	}
+	s.mu.Lock()
+	if cached, ok := s.cols[rel]; ok {
+		s.mu.Unlock()
+		return cached, nil
+	}
+	s.mu.Unlock()
+	parts := strings.Split(rel, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("relation %s", rel)
+	}
+	q := fmt.Sprintf(
+		"select column_name from %s.information_schema.columns where table_schema = '%s' and table_name = '%s'",
+		parts[0], parts[1], parts[2],
+	)
+	rows, err := s.query(ctx, q)
+	if err != nil {
 		return nil, err
 	}
-	if keep == nil {
-		return raw, nil
+	have := map[string]bool{}
+	for _, rec := range rows {
+		name := strings.ToUpper(strings.TrimSpace(stringify(recGet(rec, "COLUMN_NAME"))))
+		if name != "" {
+			have[name] = true
+		}
 	}
-	return keep(raw), nil
+	s.mu.Lock()
+	if s.cols == nil {
+		s.cols = map[string]map[string]bool{}
+	}
+	s.cols[rel] = have
+	s.mu.Unlock()
+	return have, nil
 }
 
 func (s *Snowflake) query(ctx context.Context, q string) ([]map[string]any, error) {
