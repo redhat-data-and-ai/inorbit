@@ -1071,7 +1071,12 @@ function freshnessHeadline(d, f) {
   const band = String((d && d.dag_freshness_status) || (f && f.freshness_status) || "").toUpperCase();
   if (band === "TRUSTED" || band === "GREEN" || band === "OK") return { title: "On Time", cls: "ok", badge: "Pipeline is on time" };
   if (band === "CAUTION" || band === "YELLOW") return { title: "Caution", cls: "warn", badge: "Inside the caution window" };
-  if (band === "AT_RISK" || band === "RED" || band === "BREACH") return { title: "Delayed", cls: "bad", badge: "Past the SLA" };
+  if (band === "AT_RISK" || band === "RED" || band === "BREACH") {
+    if (d && String(d.dag_status || "").toUpperCase() === "FAILED") {
+      return { title: "Delayed", cls: "bad", badge: "Latest run failed" };
+    }
+    return { title: "Delayed", cls: "bad", badge: "Past the SLA" };
+  }
   return { title: pretty(band) || "Unknown", cls: "muted", badge: "No SLA sample yet" };
 }
 
@@ -1170,7 +1175,7 @@ function primaryFreshnessHTML(snap, hrefBase) {
         <article class="io-pfresh-card">
           <div class="io-pfresh-k">${pfreshIcon("clock")} Data Freshness</div>
           <div class="io-pfresh-v ${fresh.cls}"><span class="dot" aria-hidden="true"></span>${esc(fresh.title)}</div>
-          <div class="io-pfresh-s">Last updated ${esc(age)} · SLA: ${esc(slaSpan)}</div>
+          <div class="io-pfresh-s">Data age ${esc(age)} · SLA window ${esc(slaSpan)}</div>
           <span class="io-pfresh-badge ${fresh.cls}">${fresh.cls === "ok" ? pfreshIcon("check") : ""}${esc(fresh.badge)}</span>
         </article>
         <article class="io-pfresh-card">
@@ -1665,7 +1670,7 @@ function renderDetail(route) {
     const caution = all.filter((d) => dagFreshBucket(d) === "caution").length;
     const trusted = all.filter((d) => dagFreshBucket(d) === "trusted").length;
     const ok = success;
-    const dagEmptyHint = "Live Airflow lists configured deployments. The warehouse pipeline mart covers catalog products those polls miss. Source-aligned Fivetran connectors are summarized above and shown on Lineage.";
+    const dagEmptyHint = "Live Airflow lists configured deployments. The warehouse pipeline mart covers catalog products those polls miss. Source-aligned Fivetran connectors are listed below this table and on Lineage.";
     let rows = all.filter((d) => {
       if (state.runFilter !== "all" && dagRunBucket(d) !== state.runFilter) return false;
       if (state.freshnessFilter !== "all" && dagFreshBucket(d) !== state.freshnessFilter) return false;
@@ -1694,7 +1699,6 @@ function renderDetail(route) {
     const customCount = all.filter((d) => d.dag_is_custom).length;
     body = `
       ${primaryFreshnessHTML(view, base)}
-      ${connectorStripHTML(view, base)}
       <div class="io-stat-row">
         <div class="io-stat"><strong>${all.length}</strong><span>Pipelines</span></div>
         <div class="io-stat"><strong>${failed}</strong><span>Failed</span></div>
@@ -1719,6 +1723,7 @@ function renderDetail(route) {
           </tbody>
         </table>
       </div>
+      ${connectorStripHTML(view, base)}
       <p class="sub">${esc(pipelineCountLabel(all))} active${connectorCountLabel(view.connectors) ? " · " + esc(connectorCountLabel(view.connectors)) : ""}${customCount ? " · " + customCount + " custom (shown, excluded from scores)" : ""} · Status, SLA, last/next run on the table. Expand a row for interval, age, and URL. <strong>Open in Astro</strong> is on each DAG row. <strong>Open in Fivetran</strong> is on each connector row.</p>`;
   } else if (tab === "quality") {
     const q = state.tableFilter.trim().toLowerCase();
